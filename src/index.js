@@ -20,17 +20,20 @@ const { startBulkExportWorker } = require('./services/bulkQrExportService');
 
 const app = express();
 const allowedOrigins = process.env.ALLOWED_ORIGINS 
-    ? process.env.ALLOWED_ORIGINS.split(',') 
+    ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim()) 
     : ['http://localhost:3000', 'http://localhost:5173'];
 
 const corsOptions = {
     origin: (origin, callback) => {
         // Allow requests with no origin (like mobile apps or curl)
         if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) !== -1) {
+        
+        if (allowedOrigins.includes('*') || allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
         } else {
-            callback(new Error('Not allowed by CORS'));
+            const error = new Error('Not allowed by CORS');
+            error.status = 403; // Forbidden
+            callback(error);
         }
     },
     credentials: true,
