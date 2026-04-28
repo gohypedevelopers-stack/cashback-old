@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { protect, authorize } = require('../middleware/authMiddleware');
+const { protect, authorize, requireActiveVendor } = require('../middleware/authMiddleware');
 const {
     getWalletBalance,
     rechargeWallet,
@@ -96,8 +96,9 @@ router.get('/transactions', getVendorTransactions);
 router.get('/support', getVendorSupportTickets);
 router.post('/support', createVendorSupportTicket);
 
-// --- VENDOR ROUTES ---
+// --- VENDOR ROUTES (require active vendor status) ---
 const restrictedRouter = express.Router();
+restrictedRouter.use(requireActiveVendor);
 
 // QR Codes
 restrictedRouter.post('/qrs/order', orderQRs);

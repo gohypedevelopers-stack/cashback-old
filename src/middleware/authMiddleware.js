@@ -21,6 +21,13 @@ const protect = async (req, res, next) => {
                 return res.status(401).json({ message: 'Not authorized, user not found' });
             }
 
+            // SECURITY: Block inactive or blocked users from accessing protected routes
+            if (req.user.status && req.user.status !== 'active') {
+                return res.status(403).json({
+                    message: `Your account is ${req.user.status}. Please contact support.`
+                });
+            }
+
             // Remove password from req.user
             delete req.user.password;
 
@@ -45,4 +52,39 @@ const authorize = (...roles) => {
     };
 };
 
-module.exports = { protect, authorize };
+// SECURITY: Block vendors whose vendor profile is not yet approved (pending/rejected/expired/paused)
+const requireActiveVendor = async (req, res, next) => {
+    try {
+        const vendor = await prisma.vendor.findUnique({
+            where: { userId: req.user.id },
+            select: { id: true, status: true }
+        });
+
+        if (!vendor) {
+            return res.status(403).json({
+                message: 'Vendor profile not found. Please complete registration.'
+            });
+        }
+
+        if (vendor.status !== 'active') {
+            return res.status(403).json({
+                message: `Your vendor account is ${vendor.status}. ${
+                    vendor.status === 'pending'
+                        ? 'Please wait for admin approval.'
+                        : vendor.status === 'rejected'
+                        ? 'Your application was rejected. Please contact support.'
+                        : 'Please contact support.'
+                }`
+            });
+        }
+
+        // Attach vendor ID for downstream use
+        req.vendorId = vendor.id;
+        next();
+    } catch (error) {
+        console.error('[VENDOR STATUS CHECK ERROR]', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+};
+
+module.exports = { protect, authorize, requireActiveVendor };

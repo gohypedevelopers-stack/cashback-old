@@ -429,13 +429,7 @@ exports.getAllVendors = async (req, res) => {
 
         const [vendors, total] = await Promise.all([
             prisma.vendor.findMany({
-                where: {
-                    User: {
-                        status: {
-                            not: 'inactive'
-                        }
-                    }
-                },
+                where: {},
                 include: {
                     User: true,
                     Wallet: true,
@@ -446,13 +440,7 @@ exports.getAllVendors = async (req, res) => {
                 orderBy: { createdAt: 'desc' }
             }),
             prisma.vendor.count({
-                where: {
-                    User: {
-                        status: {
-                            not: 'inactive'
-                        }
-                    }
-                }
+                where: {}
             })
         ]);
 
@@ -590,17 +578,25 @@ exports.verifyBrand = async (req, res) => {
         });
 
         if (brand.vendorId && normalizedStatus === 'rejected') {
-            await prisma.vendor.update({
+            const vendor = await prisma.vendor.update({
                 where: { id: brand.vendorId },
                 data: {
                     status: 'rejected',
                     rejectionReason: reason || null
                 }
             });
+            await prisma.user.update({
+                where: { id: vendor.userId },
+                data: { status: 'inactive' }
+            });
         } else if (brand.vendorId && normalizedStatus === 'inactive') {
-            await prisma.vendor.update({
+            const vendor = await prisma.vendor.update({
                 where: { id: brand.vendorId },
                 data: { status: 'paused' }
+            });
+            await prisma.user.update({
+                where: { id: vendor.userId },
+                data: { status: 'inactive' }
             });
         }
 
@@ -691,6 +687,14 @@ exports.verifyVendor = async (req, res) => {
                     status: normalizedStatus,
                     rejectionReason: reasonValue
                 }
+            });
+
+            // SECURITY: Sync User status with Vendor status
+            // If vendor is active, user must be active to log in.
+            // If vendor is NOT active, user should be inactive to block access.
+            await tx.user.update({
+                where: { id: updatedVendor.userId },
+                data: { status: normalizedStatus === 'active' ? 'active' : 'inactive' }
             });
 
             if (normalizedStatus === 'active' && existingVendor.status !== 'active') {

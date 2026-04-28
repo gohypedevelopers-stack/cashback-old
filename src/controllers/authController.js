@@ -56,7 +56,9 @@ const findUserByFlexibleUsername = async (loginUsername) => {
 };
 
 exports.register = async (req, res) => {
-    const { name, email, password, role, username } = req.body;
+    const { name, email, password, username } = req.body;
+    // SECURITY: Never accept 'role' from the request body on a public endpoint.
+    // Roles are assigned server-side only (vendor via /vendor/register, admin manually).
 
     if (!email || !password) {
         return res.status(400).json({ message: 'Email and password are required' });
@@ -66,10 +68,16 @@ exports.register = async (req, res) => {
         const normalizedEmail = email.trim().toLowerCase();
         const trimmedUsername = username ? username.trim() : null;
 
-        // 1. Check if email is already fully registered
+        // 1. Check if email is already registered
         const userByEmail = await prisma.user.findUnique({ where: { email: normalizedEmail } });
         if (userByEmail && userByEmail.password) {
             return res.status(400).json({ message: 'User already exists' });
+        }
+
+        // SECURITY: Block registration if email belongs to a privileged role (admin/vendor)
+        // Prevents hijacking partial admin/vendor accounts created via other flows
+        if (userByEmail && ['admin', 'vendor'].includes(userByEmail.role)) {
+            return res.status(403).json({ message: 'This email is associated with a restricted account. Please use the appropriate login method.' });
         }
 
         // 2. Check if username is already taken by someone else
@@ -93,7 +101,7 @@ exports.register = async (req, res) => {
                     name: name || userByEmail.name,
                     username: trimmedUsername || userByEmail.username,
                     password: hashedPassword,
-                    role: role || userByEmail.role || 'customer'
+                    role: userByEmail.role || 'customer'
                 }
             });
         } else {
@@ -104,7 +112,7 @@ exports.register = async (req, res) => {
                     email: normalizedEmail,
                     username: trimmedUsername,
                     password: hashedPassword,
-                    role: role || 'customer'
+                    role: 'customer'
                 }
             });
         }
@@ -192,6 +200,13 @@ exports.login = async (req, res) => {
         const passwordMatched = user.password && (await bcrypt.compare(password, user.password));
         if (!passwordMatched) {
             return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        // SECURITY: Block login for inactive or blocked users
+        if (user.status && user.status !== 'active') {
+            return res.status(403).json({
+                message: `Your account is ${user.status}. Please contact support.`
+            });
         }
 
         let vendorDetails;
@@ -747,7 +762,7 @@ exports.registerVendor = async (req, res) => {
                     phoneNumber: mobile || null,
                     password: hashedPassword,
                     role: 'vendor',
-                    status: 'active'
+                    status: 'inactive'
                 }
             });
 
@@ -829,12 +844,11 @@ exports.registerVendor = async (req, res) => {
 
         res.status(201).json({
             success: true,
-            message: 'Registration successful! Your account is pending admin approval.',
+            message: 'Registration successful! Your account is inactive and pending admin approval. You will be able to log in once your brand is verified.',
             _id: result.user.id,
             name: result.user.name,
             email: result.user.email,
             role: result.user.role,
-            token: generateToken(result.user.id, result.user.role),
             vendor: {
                 vendorId: result.vendor.id,
                 brand: result.brand,

@@ -313,6 +313,12 @@ const requireVendorProfile = async (tx, userId) => {
         error.status = 404;
         throw error;
     }
+    if (vendor.status !== 'active') {
+        const error = new Error(`Vendor account is ${vendor.status}. Access denied.`);
+        error.status = 403;
+        throw error;
+    }
+
     return vendor;
 };
 
