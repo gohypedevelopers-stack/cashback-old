@@ -53,7 +53,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Serve Uploads Static Folder
 // Static folder for public assets ONLY (if any). Sensitive uploads are now served via /api/upload/:filename
-// app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Routes
 app.use('/api/auth', authRoutes);
