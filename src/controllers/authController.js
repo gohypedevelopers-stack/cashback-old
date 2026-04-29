@@ -301,18 +301,18 @@ exports.getMe = async (req, res) => {
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 exports.sendOtp = async (req, res) => {
-    const { phoneNumber, name, email } = req.body;
-
+    const { phoneNumber, name, email, dob } = req.body;
+ 
     if (!phoneNumber) {
         return res.status(400).json({ message: 'Phone number is required' });
     }
-
+ 
     try {
         const otp = generateOTP();
         const otpExpires = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-
+ 
         let user = await prisma.user.findUnique({ where: { phoneNumber } });
-
+ 
         // SECURITY: OTP Rate Limiting
         const now = new Date();
         if (user && user.otpLastSent) {
@@ -325,7 +325,7 @@ exports.sendOtp = async (req, res) => {
                 });
             }
         }
-
+ 
         if (!user) {
             if (!name || !email) {
                 return res.status(404).json({ message: 'Account not found. Please sign up.' });
@@ -336,6 +336,7 @@ exports.sendOtp = async (req, res) => {
                     phoneNumber,
                     name: name.trim(),
                     email: email.trim().toLowerCase(),
+                    dob: dob ? dob.trim() : null,
                     role: 'customer',
                     otp,
                     otpExpires,
@@ -351,7 +352,8 @@ exports.sendOtp = async (req, res) => {
             };
             if (name) updateData.name = name.trim();
             if (email) updateData.email = email.trim().toLowerCase();
-
+            if (dob) updateData.dob = dob.trim();
+ 
             user = await prisma.user.update({
                 where: { phoneNumber },
                 data: updateData

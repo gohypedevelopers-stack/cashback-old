@@ -24,6 +24,7 @@ model User {
   resetPasswordExpires DateTime?
   resetPasswordToken   String?
   username             String?             @unique
+  dob                  String?
   ActivityLog          ActivityLog[]
   CredentialRequests   CredentialRequest[]
   Claims               Claim[]
