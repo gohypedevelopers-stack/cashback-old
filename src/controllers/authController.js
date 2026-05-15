@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { safeLogVendorActivity } = require('../utils/vendorActivityLogger');
 const { safeLogActivity } = require('../utils/activityLogger');
 const { sendOTPEmail, sendEmail } = require('../utils/emailService');
+const { sendOTPSms } = require('../utils/smsService');
 
 const generateToken = (id, role) => {
     return jwt.sign({ id, role }, process.env.JWT_SECRET, {
@@ -300,93 +301,111 @@ exports.getMe = async (req, res) => {
 // Always generate a real random OTP — no fixed test code
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
+// In-memory store for pending signups (OTP sent but not yet verified)
+// Key: phoneNumber, Value: { name, email, dob, otp, otpExpires, otpLastSent }
+const pendingSignups = new Map();
+
+// Clean up expired pending signups every 10 minutes
+setInterval(() => {
+    const now = new Date();
+    for (const [phone, data] of pendingSignups.entries()) {
+        if (now > data.otpExpires) {
+            pendingSignups.delete(phone);
+        }
+    }
+}, 10 * 60 * 1000);
+
 exports.sendOtp = async (req, res) => {
     const { email, phoneNumber, name, dob } = req.body; 
  
-    if (!email) {
-        return res.status(400).json({ message: 'Email is required' });
+    if (!phoneNumber) {
+        return res.status(400).json({ message: 'Phone number is required' });
     }
+
+    const trimmedPhone = phoneNumber.trim();
  
     try {
         const otp = generateOTP();
         const otpExpires = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
  
-        const normalizedEmail = email.trim().toLowerCase();
-        let user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+        let user = await prisma.user.findUnique({ where: { phoneNumber: trimmedPhone } });
 
         // If it's a signup (name is provided), ensure account doesn't already exist
         if (name) {
-            let existingPhoneUser = null;
-            if (phoneNumber) {
-                existingPhoneUser = await prisma.user.findUnique({ where: { phoneNumber: phoneNumber.trim() } });
+            const normalizedEmail = email ? email.trim().toLowerCase() : null;
+            let existingEmailUser = null;
+            if (normalizedEmail) {
+                existingEmailUser = await prisma.user.findUnique({ where: { email: normalizedEmail } });
             }
 
-            if (user && existingPhoneUser && user.id === existingPhoneUser.id) {
+            if (user && existingEmailUser && user.id === existingEmailUser.id) {
                 return res.status(400).json({ message: 'User is already registered. Please login.' });
             } else if (user) {
-                return res.status(400).json({ message: 'Email is already registered. Please login.' });
-            } else if (existingPhoneUser) {
                 return res.status(400).json({ message: 'Phone number is already registered. Please login.' });
+            } else if (existingEmailUser) {
+                return res.status(400).json({ message: 'Email is already registered. Please login.' });
             }
-        }
- 
-        // SECURITY: OTP Rate Limiting
-        const now = new Date();
-        if (user && user.otpLastSent) {
-            const timeSinceLastOtp = now.getTime() - new Date(user.otpLastSent).getTime();
-            const COOLDOWN_MS = 60 * 1000;
-            if (timeSinceLastOtp < COOLDOWN_MS) {
-                const waitTime = Math.ceil((COOLDOWN_MS - timeSinceLastOtp) / 1000);
-                return res.status(429).json({ 
-                    message: `Please wait ${waitTime} seconds before requesting a new OTP.` 
-                });
-            }
-        }
- 
-        if (!user) {
-            if (!name) {
-                return res.status(404).json({ message: 'Account not found. Please sign up.' });
-            }
-            // Create new partial user
-            user = await prisma.user.create({
-                data: {
-                    email: normalizedEmail,
-                    phoneNumber: phoneNumber ? phoneNumber.trim() : undefined,
-                    name: name.trim(),
-                    dob: dob ? dob.trim() : null,
-                    role: 'customer',
-                    otp,
-                    otpExpires,
-                    otpLastSent: new Date()
+
+            // Rate limit for pending signups
+            const pending = pendingSignups.get(trimmedPhone);
+            if (pending && pending.otpLastSent) {
+                const timeSinceLastOtp = Date.now() - new Date(pending.otpLastSent).getTime();
+                const COOLDOWN_MS = 30 * 1000;
+                if (timeSinceLastOtp < COOLDOWN_MS) {
+                    const waitTime = Math.ceil((COOLDOWN_MS - timeSinceLastOtp) / 1000);
+                    return res.status(429).json({ 
+                        message: `Please wait ${waitTime} seconds before requesting a new OTP.` 
+                    });
                 }
-            });
-        } else {
-            // Update existing user OTP (this block only runs for login now)
-            const updateData = {
+            }
+
+            // Store signup data in memory — DO NOT create user in DB yet
+            pendingSignups.set(trimmedPhone, {
+                name: name.trim(),
+                email: normalizedEmail || null,
+                dob: dob ? dob.trim() : null,
                 otp,
                 otpExpires,
                 otpLastSent: new Date()
-            };
- 
-            user = await prisma.user.update({
-                where: { email: normalizedEmail },
-                data: updateData
             });
+
+        } else if (user) {
+            // LOGIN flow — user exists, update OTP in DB
+            // SECURITY: OTP Rate Limiting
+            const now = new Date();
+            if (user.otpLastSent) {
+                const timeSinceLastOtp = now.getTime() - new Date(user.otpLastSent).getTime();
+                const COOLDOWN_MS = 30 * 1000;
+                if (timeSinceLastOtp < COOLDOWN_MS) {
+                    const waitTime = Math.ceil((COOLDOWN_MS - timeSinceLastOtp) / 1000);
+                    return res.status(429).json({ 
+                        message: `Please wait ${waitTime} seconds before requesting a new OTP.` 
+                    });
+                }
+            }
+
+            await prisma.user.update({
+                where: { phoneNumber: trimmedPhone },
+                data: { otp, otpExpires, otpLastSent: new Date() }
+            });
+        } else {
+            // No user found and no name provided = login attempt for non-existent account
+            return res.status(404).json({ message: 'Account not found. Please sign up.' });
         }
 
-        // Send OTP via email
-        try {
-            await sendOTPEmail(normalizedEmail, otp);
-            console.log(`[EMAIL SMTP] OTP sent to ${normalizedEmail}`);
-        } catch (mailError) {
-            console.error('[MAIL ERROR] Failed to send OTP email:', mailError);
+        // Send OTP via SMS only
+        const smsResult = await sendOTPSms(trimmedPhone, otp);
+        if (smsResult.success) {
+            console.log(`[SMS] OTP dispatched to ${trimmedPhone}`);
+        } else {
+            console.error('[SMS ERROR] Failed to send OTP SMS:', smsResult.error);
         }
 
-        console.log(`OTP for ${normalizedEmail}: ${otp}`);
+        console.log(`OTP for ${trimmedPhone}: ${otp}`);
 
         res.json({
             success: true,
-            message: 'OTP sent successfully'
+            message: 'OTP sent to your phone number via SMS'
         });
 
     } catch (error) {
@@ -395,15 +414,63 @@ exports.sendOtp = async (req, res) => {
 };
 
 exports.verifyOtp = async (req, res) => {
-    const { email, otp } = req.body;
+    const { email, phoneNumber, otp } = req.body;
 
-    if (!email || !otp) {
-        return res.status(400).json({ message: 'Email and OTP are required' });
+    // Support both phone and email for backwards compatibility
+    if (!phoneNumber && !email) {
+        return res.status(400).json({ message: 'Phone number is required' });
+    }
+    if (!otp) {
+        return res.status(400).json({ message: 'OTP is required' });
     }
 
     try {
-        const normalizedEmail = email.trim().toLowerCase();
-        const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+        const trimmedPhone = phoneNumber ? phoneNumber.trim() : null;
+
+        // First check if this is a pending signup
+        if (trimmedPhone && pendingSignups.has(trimmedPhone)) {
+            const pending = pendingSignups.get(trimmedPhone);
+
+            if (pending.otp !== otp) {
+                return res.status(400).json({ message: 'Invalid OTP' });
+            }
+
+            if (new Date() > pending.otpExpires) {
+                pendingSignups.delete(trimmedPhone);
+                return res.status(400).json({ message: 'OTP Expired' });
+            }
+
+            // OTP verified — NOW create the user in DB
+            const user = await prisma.user.create({
+                data: {
+                    phoneNumber: trimmedPhone,
+                    email: pending.email || undefined,
+                    name: pending.name,
+                    dob: pending.dob || null,
+                    role: 'customer',
+                }
+            });
+
+            // Clean up pending entry
+            pendingSignups.delete(trimmedPhone);
+
+            return res.json({
+                _id: user.id,
+                name: user.name,
+                phoneNumber: user.phoneNumber,
+                role: user.role,
+                token: generateToken(user.id, user.role)
+            });
+        }
+
+        // LOGIN flow — user already exists in DB
+        let user;
+        if (trimmedPhone) {
+            user = await prisma.user.findUnique({ where: { phoneNumber: trimmedPhone } });
+        } else {
+            const normalizedEmail = email.trim().toLowerCase();
+            user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+        }
 
         if (!user) {
             return res.status(400).json({ message: 'User not found' });
