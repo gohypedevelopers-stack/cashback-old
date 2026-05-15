@@ -5,9 +5,11 @@
 
 const SMS_CONFIG = {
     baseUrl: 'http://mshastra.com/sendurl.aspx',
-    user: process.env.MSHASTRA_USER || 'ARWRDS',
-    pwd: process.env.MSHASTRA_PWD || 'py44bhe4',
-    senderId: process.env.MSHASTRA_SENDER_ID || 'ASRD',
+    user: (process.env.MSHASTRA_USER || 'ARWRDS').trim(),
+    pwd: (process.env.MSHASTRA_PWD || 'py44bhe4').trim(),
+    senderId: (process.env.MSHASTRA_SENDER_ID || 'ASRD').trim(),
+    entityId: (process.env.MSHASTRA_ENTITY_ID || '').trim(),
+    templateId: (process.env.MSHASTRA_TEMPLATE_ID || '').trim(),
     countryCode: '91',
 };
 
@@ -23,10 +25,9 @@ const sendOTPSms = async (mobileNumber, otp) => {
     if (cleaned.startsWith('+91')) cleaned = cleaned.slice(3);
     else if (cleaned.startsWith('91') && cleaned.length === 12) cleaned = cleaned.slice(2);
 
+    // EXACT template match from DLT screenshot
     const message = `Dear Customer Your login OTP is ${otp} Do not share this code . Thanks ASRD https://assuredrewards.in/signin`;
 
-    // Build GET URL — sendurl.aspx is the endpoint that actually delivers SMS
-    // Requires IP whitelisting in MShastra panel
     const params = new URLSearchParams({
         user: SMS_CONFIG.user,
         pwd: SMS_CONFIG.pwd,
@@ -36,7 +37,14 @@ const sendOTPSms = async (mobileNumber, otp) => {
         msgtext: message,
     });
 
+    if (SMS_CONFIG.entityId) params.append('entityid', SMS_CONFIG.entityId);
+    if (SMS_CONFIG.templateId) params.append('tempid', SMS_CONFIG.templateId);
+
     const url = `${SMS_CONFIG.baseUrl}?${params.toString()}`;
+    
+    // Log the URL for debugging (masking password)
+    const maskedUrl = url.replace(`pwd=${SMS_CONFIG.pwd}`, 'pwd=********');
+    console.log(`[SMS DEBUG] Request URL: ${maskedUrl}`);
 
     try {
         const response = await fetch(url);
