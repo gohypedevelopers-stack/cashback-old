@@ -9,7 +9,7 @@ const { sendOTPSms } = require('../utils/smsService');
 
 const generateToken = (id, role) => {
     return jwt.sign({ id, role }, process.env.JWT_SECRET, {
-        expiresIn: '15m' // Short-lived access token
+        expiresIn: '30d' // Long-lived access token to prevent auto-logout
     });
 };
 
