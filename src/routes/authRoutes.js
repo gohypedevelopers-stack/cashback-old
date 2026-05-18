@@ -14,13 +14,15 @@ const {
     registerVendor,
     checkUsername,
     sendEmailVerificationOtp,
-    verifyEmailVerificationOtp
+    verifyEmailVerificationOtp,
+    googleLogin
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 
 router.post('/register', register);
 router.post('/check-username', checkUsername);
 router.post('/login', login);
+router.post('/google-login', googleLogin);
 router.get('/me', protect, getMe);
 
 router.post('/send-otp', sendOtp);

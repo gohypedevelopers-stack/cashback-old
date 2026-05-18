@@ -35,6 +35,7 @@ const sendOTPSms = async (mobileNumber, otp) => {
         senderid: SMS_CONFIG.senderId,
         mobileno: '91' + cleaned, // Prefixed 91 directly
         msgtext: message,
+        msgtype: '3', // Some gateways use '3' for Transactional/DLT
         // Send all common variations to ensure the gateway picks the right one
         entityid: SMS_CONFIG.entityId,
         peid: SMS_CONFIG.entityId,
