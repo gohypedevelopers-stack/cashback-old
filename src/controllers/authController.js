@@ -6,6 +6,8 @@ const { safeLogVendorActivity } = require('../utils/vendorActivityLogger');
 const { safeLogActivity } = require('../utils/activityLogger');
 const { sendOTPEmail, sendEmail } = require('../utils/emailService');
 const { sendOTPSms } = require('../utils/smsService');
+const { sendWhatsappOtp } = require('../utils/whatsappService');
+
 
 const generateToken = (id, role) => {
     return jwt.sign({ id, role }, process.env.JWT_SECRET, {
@@ -407,17 +409,31 @@ exports.sendOtp = async (req, res) => {
 
         // Send OTP based on available medium
         if (trimmedPhone) {
+            // SMS OTP is commented out per instructions, but kept for reference
+            /*
             const smsResult = await sendOTPSms(trimmedPhone, otp);
             if (smsResult.success) {
                 console.log(`[SMS] OTP dispatched to ${trimmedPhone}`);
             } else {
                 console.error('[SMS ERROR] Failed to send OTP SMS:', smsResult.error);
             }
+            */
+
+            const whatsappResult = await sendWhatsappOtp({ to: trimmedPhone, otpCode: otp });
+            if (whatsappResult.delivered) {
+                if (whatsappResult.simulated) {
+                    console.log(`[WhatsApp] OTP simulated dispatch (console log) to ${trimmedPhone}`);
+                } else {
+                    console.log(`[WhatsApp] OTP dispatched to ${trimmedPhone}`);
+                }
+            } else {
+                console.error('[WhatsApp ERROR] Failed to send OTP WhatsApp:', whatsappResult.error);
+            }
             console.log(`OTP for ${trimmedPhone}: ${otp}`);
 
             res.json({
                 success: true,
-                message: 'OTP sent to your phone number via SMS'
+                message: 'OTP sent to your phone number via WhatsApp'
             });
         } else if (normalizedEmail) {
             try {
