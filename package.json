@@ -10,7 +10,7 @@
     "prisma:generate": "prisma generate",
     "patch:prisma": "node scripts/patch-prisma-wasm-loader.cjs",
     "studio": "prisma studio",
-    "seed:admin": "node seed_admin.js",
+    "seed:admin": "node scripts/seed-admin.cjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
