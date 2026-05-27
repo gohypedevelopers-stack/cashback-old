@@ -740,7 +740,10 @@ exports.redeemStoreProduct = async (req, res) => {
                     category: 'withdrawal',
                     status: 'success',
                     referenceId: selectedProduct.id,
-                    description: `Store redeem: ${selectedProduct.name}`
+                    description: `Store redeem: ${selectedProduct.name}`,
+                    metadata: {
+                        address: req.body?.address || ""
+                    }
                 }
             });
 
@@ -753,7 +756,8 @@ exports.redeemStoreProduct = async (req, res) => {
                     metadata: {
                         tab: 'store',
                         productId: selectedProduct.id,
-                        amount: selectedProduct.amount
+                        amount: selectedProduct.amount,
+                        address: req.body?.address || ""
                     }
                 }
             });
