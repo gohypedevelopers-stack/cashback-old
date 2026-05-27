@@ -47,6 +47,9 @@ const sanitizeStoreProduct = (item, index) => {
     const image =
         normalizeCatalogText(item?.image) ||
         normalizeCatalogText(item?.imageUrl);
+    const images = Array.isArray(item?.images)
+        ? item.images.map(normalizeCatalogText).filter(Boolean)
+        : [];
 
     return {
         id,
@@ -56,6 +59,7 @@ const sanitizeStoreProduct = (item, index) => {
         category,
         description: normalizeCatalogText(item?.description),
         image: image || '',
+        images: images,
         value: normalizeCatalogText(item?.value),
         brand: normalizeCatalogText(item?.brand),
         stock: Number.isFinite(Number(item?.stock))
