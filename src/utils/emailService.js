@@ -46,6 +46,7 @@ const sendEmail = async ({ to, subject, text, html }) => {
 const sendOTPEmail = async (email, otp, context = 'wallet') => {
   const isVendor = context === 'vendor';
   const subject = `${otp} is your verification code`;
+  const senderEmail = process.env.SMTP_USER || 'support@assuredrewards.in';
   const contextMessage = isVendor 
     ? `Use the verification code below to verify your work email for Brand Registration.`
     : `Use the verification code below to sign in to your Assured Rewards wallet.`;
@@ -108,7 +109,7 @@ const sendOTPEmail = async (email, otp, context = 'wallet') => {
               <tr>
                 <td align="center">
                   <p style="margin: 0; color: #94a3b8; font-size: 12px;">
-                    Sent from info@assuredrewards.in
+                    Sent from ${senderEmail}
                   </p>
                 </td>
               </tr>
