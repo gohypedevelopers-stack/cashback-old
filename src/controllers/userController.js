@@ -1,6 +1,7 @@
 const prisma = require('../config/prismaClient');
 const bcrypt = require('bcryptjs');
 const { storeProducts } = require('../data/publicCatalog');
+const { uploadToR2 } = require('../utils/r2Storage');
 
 const toPositiveNumber = (value) => {
     const numeric = Number(value);
@@ -221,7 +222,13 @@ exports.uploadAvatar = async (req, res) => {
             return res.status(400).json({ message: 'No file uploaded' });
         }
 
-        const avatarUrl = `/uploads/${req.file.filename}`;
+        const r2Upload = await uploadToR2(req.file);
+
+        if (!r2Upload || !r2Upload.url) {
+             throw new Error('Failed to retrieve URL from R2 upload');
+        }
+
+        const avatarUrl = r2Upload.url;
 
         const user = await prisma.user.update({
             where: { id: req.user.id },
