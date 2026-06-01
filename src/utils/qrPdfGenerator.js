@@ -323,7 +323,7 @@ const drawPrepaidHeader = ({
     yPos += 15;
 
     doc.text(`Total QR Codes: ${totalQrs}`, { align: 'center' });
-    yPos += 25;
+    yPos += 30;
 
     return yPos;
 };
@@ -338,50 +338,91 @@ const drawPostpaidHeader = ({
     globalSheetIdx,
     displayTotalSheets,
     logicalPageIdx,
-    pagesPerLogicalSheet
+    pagesPerLogicalSheet,
+    batchLabel,
+    qrRange,
+    logicalQrsPerSheet,
+    allocations
 }) => {
     let yPos = 20;
     const sheetLetter = toRoman(globalSheetIdx + 1);
 
     const sheetCashback = resolveSheetHeaderAmount(sheetQrs);
-    if (sheetCashback > 0) {
-        doc.fontSize(11).font('Helvetica-Bold').fillColor('#10b981');
-        doc.text(`Rs. ${sheetCashback.toFixed(0)}`, 30, yPos, { width: 120, align: 'left' });
-        doc.fillColor('black');
-    }
+    const hasAssuredRewards = sheetQrs.some(qr => qr?.cashbackAmount !== null && qr.cashbackAmount !== undefined);
 
-    doc.fontSize(20).font('Helvetica-Bold').fillColor('#10b981').text('Assured Rewards', 30, yPos, {
-        width: doc.page.width - 60,
-        align: 'center'
-    });
+    if (hasAssuredRewards) {
+        doc.fontSize(16).font('Helvetica-Bold').fillColor('#059669');
+        if (sheetCashback) {
+            doc.text(`Rs. ${sheetCashback}`, 30, yPos, { align: 'left', continued: true });
+            doc.text('Assured Rewards', 30, yPos, { align: 'center' });
+        } else {
+            doc.text('Assured Rewards', 30, yPos, { align: 'center' });
+        }
+    } else {
+        doc.fontSize(16).font('Helvetica-Bold').fillColor('#059669');
+        doc.text('Lucky Draw Rewards', 30, yPos, { align: 'center' });
+    }
+    yPos += 20;
+
     doc.fillColor('black');
-    yPos += 28;
 
     if (brandLogoBuffer) {
-        const logoWidth = 50;
-        doc.image(brandLogoBuffer, (doc.page.width - logoWidth) / 2, yPos, { width: logoWidth });
-        yPos += 55;
+        const maxLogoWidth = 100;
+        const maxLogoHeight = 35;
+        try {
+            doc.image(brandLogoBuffer, (doc.page.width - maxLogoWidth) / 2, yPos, {
+                fit: [maxLogoWidth, maxLogoHeight],
+                align: 'center'
+            });
+            yPos += maxLogoHeight + 10;
+        } catch (e) {
+            console.error('Failed to draw brand logo:', e);
+            doc.fontSize(14).font('Helvetica-Bold').text(brandName, 30, yPos, { align: 'center' });
+            yPos += 20;
+        }
     } else if (brandName) {
-        doc.fontSize(16).font('Helvetica-Bold').text(brandName, 30, yPos, {
+        doc.fontSize(14).font('Helvetica-Bold').text(brandName, 30, yPos, {
             width: doc.page.width - 60,
             align: 'center'
         });
-        yPos += 22;
+        yPos += 20;
     }
 
-    if (brandLogoBuffer && brandName) {
-        doc.fontSize(14).font('Helvetica-Bold').text(brandName, 30, yPos, {
+    let detectedBatch = null;
+    const startQrNumForBatch = (globalSheetIdx * (logicalQrsPerSheet || 25)) + 1;
+    let parsedAllocations = allocations;
+    if (typeof allocations === 'string') {
+        try { parsedAllocations = JSON.parse(allocations); } catch (e) {}
+    }
+    if (parsedAllocations && Array.isArray(parsedAllocations)) {
+        const validBatches = parsedAllocations.filter(a => Number(a.cashbackAmount) > 0 || Number(a.totalBudget) > 0);
+        let cursor = 1;
+        for (let i = 0; i < validBatches.length; i++) {
+            const qty = Number(validBatches[i].quantity || 0);
+            const batchStart = cursor;
+            const batchEnd = cursor + qty - 1;
+            if (startQrNumForBatch >= batchStart && startQrNumForBatch <= batchEnd) {
+                detectedBatch = `Batch ${i + 1}`;
+                break;
+            }
+            cursor += qty;
+        }
+    }
+
+    const effectiveBatchLabel = batchLabel || detectedBatch;
+    if (effectiveBatchLabel) {
+        doc.fontSize(14).font('Helvetica-Bold').text(effectiveBatchLabel, 30, yPos, {
+            width: doc.page.width - 60,
+            align: 'center'
+        });
+        yPos += 18;
+    } else {
+        doc.fontSize(14).font('Helvetica-Bold').text(`Sheet ${sheetLetter}`, 30, yPos, {
             width: doc.page.width - 60,
             align: 'center'
         });
         yPos += 18;
     }
-
-    doc.fontSize(14).font('Helvetica-Bold').text(`Sheet ${sheetLetter}`, 30, yPos, {
-        width: doc.page.width - 60,
-        align: 'center'
-    });
-    yPos += 18;
 
     doc.fontSize(9).font('Helvetica').text(`Campaign: ${campaignTitle}`, 30, yPos, {
         width: doc.page.width - 60,
@@ -395,11 +436,21 @@ const drawPostpaidHeader = ({
     });
     yPos += 13;
 
-    doc.text(`Sheet ${globalSheetIdx + 1} of ${displayTotalSheets}  |  ${sheetQrs.length} QR Codes`, 30, yPos, {
-        width: doc.page.width - 60,
-        align: 'center'
-    });
-    yPos += 13;
+    if (batchLabel && qrRange) {
+        doc.text(`Range: ${qrRange}  |  ${sheetQrs.length} QR Codes`, 30, yPos, {
+            width: doc.page.width - 60,
+            align: 'center'
+        });
+    } else {
+        const startQrNum = (globalSheetIdx * (logicalQrsPerSheet || 25)) + 1;
+        const endQrNum = startQrNum + sheetQrs.length - 1;
+        const sheetQrRange = endQrNum > startQrNum ? `QRs ${startQrNum}-${endQrNum}` : `QR ${startQrNum}`;
+        doc.text(`Sheet ${globalSheetIdx + 1} of ${displayTotalSheets}  |  Range: ${sheetQrRange}  |  ${sheetQrs.length} QR Codes`, 30, yPos, {
+            width: doc.page.width - 60,
+            align: 'center'
+        });
+    }
+    yPos += 30;
 
     if (pagesPerLogicalSheet > 1) {
         doc.fontSize(8).font('Helvetica').fillColor('#4b5563');
@@ -408,12 +459,10 @@ const drawPostpaidHeader = ({
             align: 'center'
         });
         doc.fillColor('black');
-        yPos += 14;
-    } else {
-        yPos += 5;
+        yPos += 12;
     }
 
-    return yPos;
+    return { yPos, effectiveBatchLabel };
 };
 
 const drawPostpaidPageGrid = ({
@@ -423,7 +472,8 @@ const drawPostpaidPageGrid = ({
     yPos,
     globalSheetIdx,
     pageStart,
-    voucherDesignBuffer
+    voucherDesignBuffer,
+    batchLabel
 }) => {
     const qrSize = 85;
     const labelHeight = 30;
@@ -489,12 +539,14 @@ const drawPostpaidPageGrid = ({
 
         const withinSheetIndex = pageStart + i + 1;
         const qrLabel = `${idLetter}${withinSheetIndex}`;
-        const labelY = currentY + qrSize + 2;
+        let labelY = currentY + qrSize + 2;
         doc.fontSize(9).font('Helvetica-Bold');
         doc.text(qrLabel, currentX, labelY, {
             width: cellWidth,
             align: 'center'
         });
+
+
 
         const isRedeemedText = isRedeemed;
         if (isRedeemedText) {
@@ -502,8 +554,9 @@ const drawPostpaidPageGrid = ({
                 .fontSize(7)
                 .font('Helvetica-Bold')
                 .fillColor('#b45309');
+            const redeemedText = qr?.cashbackAmount ? `(Redeemed - Rs. ${qr.cashbackAmount})` : `(Redeemed)`;
             doc.text(
-                `(Redeemed)`,
+                redeemedText,
                 currentX,
                 labelY + 10,
                 {
@@ -576,7 +629,8 @@ const drawPrepaidPageGrid = ({
             doc.restore();
 
             doc.fontSize(7).font('Helvetica-Bold').fillColor('red');
-            doc.text(`#${String(qr.uniqueHash || '').slice(-6)} - CLAIMED`, currentX, labelY, {
+            const claimedText = qr?.cashbackAmount ? `- CLAIMED (Rs. ${qr.cashbackAmount})` : `- CLAIMED`;
+            doc.text(`#${String(qr.uniqueHash || '').slice(-6)} ${claimedText}`, currentX, labelY, {
                 width: cellWidth,
                 align: 'center'
             });
@@ -773,6 +827,9 @@ async function generateQrPdf({
     planType,
     productName,
     compactMode,
+    allocations,
+    batchLabel,
+    qrRange,
     startSheetIndex,
     totalSheetCount,
     qrsPerSheet,
@@ -853,7 +910,7 @@ async function generateQrPdf({
                     const pageQrs = sheetQrs.slice(pageStart, pageStart + DEFAULT_QRS_PER_GRID_PAGE);
                     const pageBuffers = await renderQrPageBuffers(pageQrs, 85);
 
-                    const yPos = drawPostpaidHeader({
+                    const { yPos, effectiveBatchLabel } = drawPostpaidHeader({
                         doc,
                         brandLogoBuffer,
                         brandName,
@@ -863,7 +920,11 @@ async function generateQrPdf({
                         globalSheetIdx,
                         displayTotalSheets,
                         logicalPageIdx,
-                        pagesPerLogicalSheet
+                        pagesPerLogicalSheet,
+                        batchLabel,
+                        qrRange,
+                        logicalQrsPerSheet,
+                        allocations
                     });
 
                     drawPostpaidPageGrid({
@@ -873,7 +934,8 @@ async function generateQrPdf({
                         yPos,
                         globalSheetIdx,
                         pageStart,
-                        voucherDesignBuffer: null
+                        voucherDesignBuffer: null,
+                        batchLabel: effectiveBatchLabel
                     });
 
                     processedQrs += pageQrs.length;

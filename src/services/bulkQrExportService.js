@@ -816,6 +816,7 @@ const processCampaignJob = async (job) => {
             voucherDesignUrl: campaign.voucherDesignUrl || null,
             voucherHeading: campaign.voucherHeading || null,
             voucherSubtext: campaign.voucherSubtext || null,
+            allocations: campaign.allocations,
             voucherExtraText: campaign.voucherExtraText || null,
             onProgress: progressUpdater
         });

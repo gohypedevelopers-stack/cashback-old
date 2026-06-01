@@ -4214,13 +4214,16 @@ exports.downloadCampaignQrPdf = async (req, res) => {
             planType: campaign.planType,
             productName,
             compactMode: isCompactDownload,
+            allocations: campaign.allocations,
             startSheetIndex: isSheetScopedPostpaid
                 ? parsedSheetIndex
                 : (campaign.planType === 'postpaid' && hasChunkedWindow
                     ? Math.floor(safeOffset / qrsPerSheet)
                     : 0),
             totalSheetCount: totalSheetCountForPdf,
-            qrsPerSheet
+            qrsPerSheet,
+            batchLabel: req.query?.batchLabel,
+            qrRange: req.query?.qrRange
         });
         mark('pdfReady');
 
