@@ -55,6 +55,16 @@ const LOGO_CACHE_MAX_ITEMS = (() => {
 })();
 const logoCache = new Map();
 
+const getShortQrId = (qr) => {
+    const id = String(qr?.id || '').trim();
+    return id ? id.slice(-8) : String(qr?.uniqueHash || '').slice(-6);
+};
+
+const getGridQrLabel = (qr, sequenceLabel) => {
+    const shortQrId = getShortQrId(qr);
+    return shortQrId ? `${sequenceLabel} | QR ID: ${shortQrId}` : sequenceLabel;
+};
+
 const getApiBaseUrl = () => {
     const port = process.env.PORT || 5000;
     const base =
@@ -538,9 +548,9 @@ const drawPostpaidPageGrid = ({
         }
 
         const withinSheetIndex = pageStart + i + 1;
-        const qrLabel = `${idLetter}${withinSheetIndex}`;
+        const qrLabel = getGridQrLabel(qr, `${idLetter}${withinSheetIndex}`);
         let labelY = currentY + qrSize + 2;
-        doc.fontSize(9).font('Helvetica-Bold');
+        doc.fontSize(6).font('Helvetica-Bold');
         doc.text(qrLabel, currentX, labelY, {
             width: cellWidth,
             align: 'center'
@@ -630,13 +640,13 @@ const drawPrepaidPageGrid = ({
 
             doc.fontSize(7).font('Helvetica-Bold').fillColor('red');
             const claimedText = qr?.cashbackAmount ? `- CLAIMED (Rs. ${qr.cashbackAmount})` : `- CLAIMED`;
-            doc.text(`#${String(qr.uniqueHash || '').slice(-6)} ${claimedText}`, currentX, labelY, {
+            doc.text(`QR ID: ${getShortQrId(qr)} ${claimedText}`, currentX, labelY, {
                 width: cellWidth,
                 align: 'center'
             });
         } else {
             doc.fontSize(7).font('Helvetica').fillColor('black');
-            doc.text(`#${String(qr.uniqueHash || '').slice(-6)}`, currentX, labelY, {
+            doc.text(`QR ID: ${getShortQrId(qr)}`, currentX, labelY, {
                 width: cellWidth,
                 align: 'center'
             });

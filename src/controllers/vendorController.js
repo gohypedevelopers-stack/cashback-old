@@ -3513,12 +3513,14 @@ exports.startCampaignBulkQrExport = async (req, res) => {
             req.body?.qrsPerSheet ?? req.query?.qrsPerSheet
         );
         const singleFileRequested = isTruthyFlag(req.body?.singleFile ?? req.query?.singleFile);
+        const qrLabelFormatVersion = Number(req.body?.qrLabelFormatVersion ?? req.query?.qrLabelFormatVersion) || null;
         const job = await queueCampaignExportJob({
             vendorId: vendor.id,
             campaignId: req.params.id,
             qrsPerSheet: requestedQrsPerSheet,
             splitParts: !singleFileRequested,
-            requestedByUserId: req.user.id
+            requestedByUserId: req.user.id,
+            qrLabelFormatVersion
         });
 
         res.status(202).json({

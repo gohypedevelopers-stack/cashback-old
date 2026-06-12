@@ -1,5 +1,82 @@
 const prisma = require('../config/prismaClient');
 const { giftCardCategories, giftCards, storeTabs, storeCategories, vouchers, storeProducts } = require('../data/publicCatalog');
+const { uploadToR2 } = require('../utils/r2Storage');
+
+const normalizeBlogText = (value) => String(value || '').trim();
+
+const sanitizeBlogEntry = (blog, index = 0) => {
+    const title = normalizeBlogText(blog?.title);
+    const content = normalizeBlogText(blog?.content);
+    const coverImage = normalizeBlogText(blog?.coverImage || blog?.image);
+    if (!title && !content && !coverImage) return null;
+
+    return {
+        id: normalizeBlogText(blog?.id) || `blog-${Date.now()}-${index}`,
+        title,
+        slug: normalizeBlogText(blog?.slug),
+        excerpt: normalizeBlogText(blog?.excerpt),
+        author: normalizeBlogText(blog?.author),
+        category: normalizeBlogText(blog?.category),
+        coverImage,
+        content,
+        status: normalizeBlogText(blog?.status).toLowerCase() === 'published' ? 'published' : 'draft',
+        publishedAt: normalizeBlogText(blog?.publishedAt)
+    };
+};
+
+const getBlogUsers = (metadata = {}) => {
+    const users = Array.isArray(metadata?.blogUsers) ? metadata.blogUsers : [];
+    const normalized = users
+        .map((user, index) => ({
+            id: normalizeBlogText(user?.id) || `blog-user-${index + 1}`,
+            name: normalizeBlogText(user?.name),
+            email: normalizeBlogText(user?.email || user?.username).toLowerCase(),
+            password: normalizeBlogText(user?.password),
+            access: user?.access !== false
+        }))
+        .filter((user) => user.email && user.password);
+
+    if (
+        normalized.length === 0 &&
+        metadata?.blogCredentials &&
+        typeof metadata.blogCredentials === 'object'
+    ) {
+        const legacyEmail = normalizeBlogText(metadata.blogCredentials.username).toLowerCase();
+        const legacyPassword = normalizeBlogText(metadata.blogCredentials.password);
+        if (legacyEmail && legacyPassword) {
+            normalized.push({
+                id: 'blog-user-legacy',
+                name: 'Blog User',
+                email: legacyEmail,
+                password: legacyPassword,
+                access: true
+            });
+        }
+    }
+
+    return normalized;
+};
+
+const verifyBlogUser = (metadata, email, password) => {
+    const requestedEmail = normalizeBlogText(email).toLowerCase();
+    const requestedPassword = normalizeBlogText(password);
+    return getBlogUsers(metadata).find(
+        (user) =>
+            user.access !== false &&
+            user.email === requestedEmail &&
+            user.password === requestedPassword
+    );
+};
+
+const getBlogSettings = async () => {
+    const settings = await prisma.systemSettings.findUnique({
+        where: { id: 'default' },
+        select: { metadata: true }
+    });
+    return settings?.metadata && typeof settings.metadata === 'object'
+        ? settings.metadata
+        : {};
+};
 
 const toPositiveNumber = (value) => {
     const numeric = Number(value);
@@ -255,6 +332,89 @@ exports.getHomeData = async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ message: 'Error loading home data', error: error.message });
+    }
+};
+
+exports.getPublicBlogs = async (_req, res) => {
+    try {
+        const metadata = await getBlogSettings();
+        const blogs = Array.isArray(metadata.blogs)
+            ? metadata.blogs.map(sanitizeBlogEntry).filter(Boolean)
+            : [];
+        res.json({
+            blogs: blogs.filter((blog) => blog.status === 'published')
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching blogs', error: error.message });
+    }
+};
+
+exports.loginBlogTeam = async (req, res) => {
+    try {
+        const metadata = await getBlogSettings();
+        const { email, username, password } = req.body || {};
+        const blogUser = verifyBlogUser(metadata, email || username, password);
+        if (!blogUser) {
+            return res.status(401).json({ message: 'Invalid email ID or password, or access is disabled' });
+        }
+        const blogs = Array.isArray(metadata.blogs)
+            ? metadata.blogs.map(sanitizeBlogEntry).filter(Boolean)
+            : [];
+        res.json({ message: 'Login successful', user: blogUser, blogs });
+    } catch (error) {
+        res.status(500).json({ message: 'Error logging in', error: error.message });
+    }
+};
+
+exports.saveBlogTeamPosts = async (req, res) => {
+    try {
+        const { email, username, password, blogs } = req.body || {};
+        const metadata = await getBlogSettings();
+        if (!verifyBlogUser(metadata, email || username, password)) {
+            return res.status(401).json({ message: 'Invalid email ID or password, or access is disabled' });
+        }
+        const nextBlogs = Array.isArray(blogs)
+            ? blogs.map(sanitizeBlogEntry).filter(Boolean)
+            : [];
+        const settings = await prisma.systemSettings.upsert({
+            where: { id: 'default' },
+            create: {
+                id: 'default',
+                metadata: {
+                    ...metadata,
+                    blogs: nextBlogs
+                }
+            },
+            update: {
+                metadata: {
+                    ...metadata,
+                    blogs: nextBlogs
+                }
+            }
+        });
+        res.json({ message: 'Blogs saved', blogs: settings.metadata?.blogs || [] });
+    } catch (error) {
+        res.status(500).json({ message: 'Error saving blogs', error: error.message });
+    }
+};
+
+exports.uploadBlogTeamImage = async (req, res) => {
+    try {
+        const { email, username, password } = req.body || {};
+        const metadata = await getBlogSettings();
+        if (!verifyBlogUser(metadata, email || username, password)) {
+            return res.status(401).json({ message: 'Invalid email ID or password, or access is disabled' });
+        }
+        if (!req.file) {
+            return res.status(400).json({ message: 'No file uploaded' });
+        }
+        const r2Upload = await uploadToR2(req.file);
+        if (!r2Upload?.url) {
+            throw new Error('Failed to retrieve URL from upload');
+        }
+        res.status(201).json({ message: 'File uploaded successfully', url: r2Upload.url });
+    } catch (error) {
+        res.status(500).json({ message: 'Upload failed', error: error.message });
     }
 };
 

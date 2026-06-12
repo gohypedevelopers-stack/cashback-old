@@ -363,7 +363,8 @@ const queueCampaignExportJob = async ({
     campaignId,
     qrsPerSheet,
     splitParts = true,
-    requestedByUserId = null
+    requestedByUserId = null,
+    qrLabelFormatVersion = null
 }) => {
     const campaign = await prisma.campaign.findUnique({
         where: { id: campaignId },
@@ -445,6 +446,7 @@ const queueCampaignExportJob = async ({
                     planType: campaign.planType,
                     splitParts: splitParts !== false,
                     requestedByUserId,
+                    qrLabelFormatVersion,
                     requestedQrsPerSheet: toPositiveInt(qrsPerSheet),
                     resolvedQrsPerSheet
                 }
