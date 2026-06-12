@@ -2935,3 +2935,303 @@ exports.getActivityLogs = async (req, res) => {
         res.status(500).json({ message: 'Error fetching activity logs', error: error.message });
     }
 };
+
+exports.updateTransactionStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+
+        if (!['SUCCESS', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(status)) {
+            return res.status(400).json({ message: 'Invalid status. Use: SUCCESS, PROCESSING, SHIPPED, DELIVERED' });
+        }
+
+        const transaction = await prisma.transaction.findUnique({
+            where: { id },
+            include: {
+                Wallet: {
+                    include: {
+                        User: {
+                            select: {
+                                id: true,
+                                name: true,
+                                email: true
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        if (!transaction) {
+            return res.status(404).json({ message: 'Transaction not found' });
+        }
+
+        const currentMetadata = transaction.metadata && typeof transaction.metadata === 'object'
+            ? transaction.metadata
+            : {};
+        const currentTimestamps = currentMetadata.statusTimestamps || {};
+        currentTimestamps[status] = new Date().toISOString();
+
+        const updatedMetadata = {
+            ...currentMetadata,
+            orderStatus: status,
+            statusTimestamps: currentTimestamps
+        };
+
+        const updatedTransaction = await prisma.transaction.update({
+            where: { id },
+            data: {
+                metadata: updatedMetadata
+            }
+        });
+
+        const productName = String(transaction.description || '').replace(/^(Store redeem:|Redeem:)\s*/i, "").trim();
+        const userName = transaction.Wallet?.User?.name || 'Customer';
+        const userEmail = transaction.Wallet?.User?.email;
+        const userId = transaction.Wallet?.userId;
+
+        if (userId) {
+            const statusText = status === "SUCCESS" ? "Placed" : status.charAt(0) + status.slice(1).toLowerCase();
+            await prisma.notification.create({
+                data: {
+                    userId,
+                    title: `Order Status: ${statusText}`,
+                    message: `Your order for "${productName}" is now ${statusText.toLowerCase()}.`,
+                    type: 'store-redeem-status',
+                    metadata: {
+                        transactionId: id,
+                        status: status
+                    }
+                }
+            });
+        }
+
+        if (userEmail) {
+            const statusText = status === "SUCCESS" ? "Placed" : status.charAt(0) + status.slice(1).toLowerCase();
+            const subject = `Order Status Updated: ${statusText}`;
+            const text = `Hello ${userName},\n\nYour order for "${productName}" has been updated to: ${statusText}.\n\nThank you for using Assured Rewards!`;
+
+            let statusColor = '#10b981'; // green for Placed & Delivered
+            let statusBg = '#e6f7f0';
+            let statusBorder = '#a7f3d0';
+            
+            if (status === 'PROCESSING') {
+                statusColor = '#f59e0b'; // amber
+                statusBg = '#fffbeb';
+                statusBorder = '#fef3c7';
+            } else if (status === 'SHIPPED') {
+                statusColor = '#3b82f6'; // blue
+                statusBg = '#eff6ff';
+                statusBorder = '#bfdbfe';
+            }
+
+            const isPlacedDone = true;
+            const isProcessingDone = ['PROCESSING', 'SHIPPED', 'DELIVERED'].includes(status);
+            const isShippedDone = ['SHIPPED', 'DELIVERED'].includes(status);
+            const isDeliveredDone = status === 'DELIVERED';
+
+            const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Order Status Update</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="table-layout: fixed;">
+    <tr>
+      <td align="center" style="padding: 40px 16px;">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 500px; background-color: #ffffff; border-radius: 20px; overflow: hidden; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05); border: 1px solid #e5e7eb;">
+          
+          <!-- Header (Light green background block) -->
+          <tr>
+            <td align="center" style="background: linear-gradient(180deg, #f4fbf7 0%, #ffffff 100%); padding: 36px 24px 20px 24px;">
+              <table border="0" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td align="center" style="padding-bottom: 16px;">
+                    <img src="https://assuredrewards.in/logo.png" alt="Logo" style="height: 55px; width: auto; display: block;">
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center">
+                    <h2 style="margin: 0; color: #0f172a; font-size: 24px; font-weight: 800; letter-spacing: -0.02em;">Order Status Update</h2>
+                    <div style="width: 40px; height: 3px; background-color: #10b981; margin: 12px auto 0 auto; border-radius: 2px;"></div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          
+          <!-- Body Content -->
+          <tr>
+            <td style="padding: 0 32px 32px 32px; font-family: inherit;">
+              <p style="margin: 0 0 12px 0; color: #0f172a; font-size: 15px; line-height: 24px; font-weight: 700;">
+                Hi ${userName},
+              </p>
+              <p style="margin: 0 0 24px 0; color: #475569; font-size: 14px; line-height: 22px;">
+                Great news! Your redemption order has been <span style="color: ${statusColor}; font-weight: 700;">${statusText.toLowerCase()}</span>.
+              </p>
+              
+              <!-- Order Details Card -->
+              <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #ffffff; border-radius: 16px; border: 1px solid #edf2f7; margin-bottom: 28px; border-collapse: separate; box-shadow: 0 4px 20px rgba(0,0,0,0.01);">
+                <tr>
+                  <td style="padding: 24px;">
+                    <h3 style="margin: 0 0 20px 0; font-size: 15px; font-weight: 700; color: #0f172a;">Order Details</h3>
+                    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                      <!-- Row 1: Order ID -->
+                      <tr style="border-bottom: 1px solid #f1f5f9;">
+                        <td style="padding: 12px 0; font-size: 13px; color: #475569; font-weight: 600; vertical-align: middle;">Order ID</td>
+                        <td style="padding: 12px 0; font-size: 13px; color: #0f172a; font-weight: 700; text-align: right; vertical-align: middle;">#${id.slice(-8).toUpperCase()}</td>
+                      </tr>
+                      <!-- Row 2: Product -->
+                      <tr style="border-bottom: 1px solid #f1f5f9;">
+                        <td style="padding: 12px 0; font-size: 13px; color: #475569; font-weight: 600; vertical-align: middle;">Product</td>
+                        <td style="padding: 12px 0; font-size: 13px; color: #0f172a; font-weight: 700; text-align: right; vertical-align: middle;">${productName}</td>
+                      </tr>
+                      <!-- Row 3: Status -->
+                      <tr>
+                        <td style="padding: 12px 0; font-size: 13px; color: #475569; font-weight: 600; vertical-align: middle;">Status</td>
+                        <td style="padding: 12px 0; text-align: right; vertical-align: middle;">
+                          <span style="display: inline-block; background-color: ${statusBg}; color: ${statusColor}; padding: 4px 12px; border-radius: 9999px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid ${statusBorder};">
+                            ✓ ${statusText}
+                          </span>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Stepper Section Header -->
+              <h4 style="margin: 0 0 20px 0; color: #0f172a; font-size: 14px; font-weight: 700; text-align: center;">Delivery Progress</h4>
+
+              <!-- Stepper Timeline -->
+              <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 32px;">
+                <tr>
+                  <!-- Step 1 -->
+                  <td align="center" style="width: 20%; vertical-align: top;">
+                    <table border="0" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td align="center" style="width: 24px; height: 24px; border-radius: 50%; background-color: ${isPlacedDone ? '#10b981' : '#e2e8f0'}; color: #ffffff; font-weight: 700; font-size: 11px; line-height: 24px; text-align: center;">
+                          ✓
+                        </td>
+                      </tr>
+                    </table>
+                    <div style="font-size: 11px; font-weight: ${status === 'SUCCESS' ? '700' : '500'}; color: ${isPlacedDone ? (status === 'SUCCESS' ? '#10b981' : '#0f172a') : '#94a3b8'}; margin-top: 8px;">Placed</div>
+                  </td>
+                  
+                  <!-- Connector 1 -->
+                  <td style="padding-top: 10px; width: 6%; vertical-align: top;">
+                    <div style="height: 3px; background-color: ${isProcessingDone ? '#10b981' : '#e2e8f0'};"></div>
+                  </td>
+                  
+                  <!-- Step 2 -->
+                  <td align="center" style="width: 20%; vertical-align: top;">
+                    <table border="0" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td align="center" style="width: 24px; height: 24px; border-radius: 50%; background-color: ${isProcessingDone ? '#10b981' : '#e2e8f0'}; color: #ffffff; font-weight: 700; font-size: 11px; line-height: 24px; text-align: center;">
+                          ${isProcessingDone ? '✓' : ''}
+                        </td>
+                      </tr>
+                    </table>
+                    <div style="font-size: 11px; font-weight: ${status === 'PROCESSING' ? '700' : '500'}; color: ${isProcessingDone ? (status === 'PROCESSING' ? '#f59e0b' : '#0f172a') : '#94a3b8'}; margin-top: 8px;">Processing</div>
+                  </td>
+                  
+                  <!-- Connector 2 -->
+                  <td style="padding-top: 10px; width: 6%; vertical-align: top;">
+                    <div style="height: 3px; background-color: ${isShippedDone ? '#10b981' : '#e2e8f0'};"></div>
+                  </td>
+                  
+                  <!-- Step 3 -->
+                  <td align="center" style="width: 20%; vertical-align: top;">
+                    <table border="0" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td align="center" style="width: 24px; height: 24px; border-radius: 50%; background-color: ${isShippedDone ? '#10b981' : '#e2e8f0'}; color: #ffffff; font-weight: 700; font-size: 11px; line-height: 24px; text-align: center;">
+                          ${isShippedDone ? '✓' : ''}
+                        </td>
+                      </tr>
+                    </table>
+                    <div style="font-size: 11px; font-weight: ${status === 'SHIPPED' ? '700' : '500'}; color: ${isShippedDone ? (status === 'SHIPPED' ? '#3b82f6' : '#0f172a') : '#94a3b8'}; margin-top: 8px;">Shipped</div>
+                  </td>
+                  
+                  <!-- Connector 3 -->
+                  <td style="padding-top: 10px; width: 6%; vertical-align: top;">
+                    <div style="height: 3px; background-color: ${isDeliveredDone ? '#10b981' : '#e2e8f0'};"></div>
+                  </td>
+                  
+                  <!-- Step 4 -->
+                  <td align="center" style="width: 20%; vertical-align: top;">
+                    <table border="0" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td align="center" style="width: 24px; height: 24px; border-radius: 50%; background-color: ${isDeliveredDone ? '#10b981' : '#e2e8f0'}; color: #ffffff; font-weight: 700; font-size: 11px; line-height: 24px; text-align: center;">
+                          ${isDeliveredDone ? '✓' : ''}
+                        </td>
+                      </tr>
+                    </table>
+                    <div style="font-size: 11px; font-weight: ${status === 'DELIVERED' ? '700' : '500'}; color: ${isDeliveredDone ? '#10b981' : '#94a3b8'}; margin-top: 8px;">Delivered</div>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Support Box (Soft green block with headphones icon) -->
+              <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f4fbf7; border: 1px solid #e6f7f0; border-radius: 12px;">
+                <tr>
+                  <td style="padding: 16px 20px;">
+                    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                      <tr>
+                        <td style="width: 36px; font-size: 24px; vertical-align: middle;">🎧</td>
+                        <td style="font-size: 13px; line-height: 18px; color: #475569; font-weight: 500; padding-left: 12px; vertical-align: middle;">
+                          If you have any questions or did not authorize this, please contact us at <a href="mailto:support@assuredrewards.in" style="color: #10b981; text-decoration: none; font-weight: 700;">support@assuredrewards.in</a>.
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+            </td>
+          </tr>
+          
+          <!-- Footer divider -->
+          <tr>
+            <td style="padding: 0 32px;">
+              <div style="border-top: 1px solid #e2e8f0; height: 1px; font-size: 0; line-height: 0;">&nbsp;</div>
+            </td>
+          </tr>
+          
+          <!-- Footer section -->
+          <tr>
+            <td style="padding: 24px 32px 32px 32px; text-align: center; font-family: inherit;">
+              <p style="margin: 0 0 6px 0; color: #0f172a; font-size: 14px; font-weight: 700;">Thank you for choosing us!</p>
+              <p style="margin: 0; color: #94a3b8; font-size: 12px;">We appreciate your trust.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+            `;
+
+            const { sendEmail } = require('../utils/emailService');
+            try {
+                await sendEmail({ to: userEmail, subject, text, html });
+            } catch (err) {
+                console.error("Error sending order status email:", err);
+            }
+        }
+
+        res.json({
+            message: `Order status updated to ${status}`,
+            transaction: {
+                id: updatedTransaction.id,
+                metadata: updatedTransaction.metadata
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Update failed', error: error.message });
+    }
+};
+

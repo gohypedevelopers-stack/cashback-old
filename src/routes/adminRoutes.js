@@ -13,7 +13,7 @@ const {
     approveCredentialRequest, rejectCredentialRequest, getBrandOverview, updateBrandDetails,
     getPendingWithdrawals, processWithdrawal,
     getAllSupportTickets, replySupportTicket, sendNotification, getNotifications,
-    getAllOrders, updateOrderStatus,
+    getAllOrders, updateOrderStatus, updateTransactionStatus,
     deleteCampaign, deleteUser,
     getSystemSettings, updateSystemSettings, getActivityLogs, getFinanceSummary
 } = require('../controllers/adminController');
@@ -105,6 +105,7 @@ router.get('/notifications', getNotifications);
 // QR Order Management
 router.get('/orders', getAllOrders);
 router.put('/orders/:id/status', updateOrderStatus);
+router.put('/transactions/:id/status', updateTransactionStatus);
 
 // C8: System Settings
 router.get('/settings', getSystemSettings);
