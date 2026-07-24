@@ -102,7 +102,7 @@ const resolveTechFeePerQr = ({ vendor, brand }) => {
     const legacyQrPrice = Number(brand?.qrPricePerUnit);
     if (Number.isFinite(legacyQrPrice) && legacyQrPrice > 0) return legacyQrPrice;
 
-    return 1;
+    return 1.5;
 };
 
 const LEGACY_LOCKABLE_QR_STATUSES = ['generated', 'active', 'assigned', 'funded', 'redeemed'];
@@ -5605,5 +5605,6 @@ exports.getSharedInvoice = async (req, res) => {
         res.status(500).json({ message: 'Failed to open shared invoice', error: error.message });
     }
 };
+
 
 

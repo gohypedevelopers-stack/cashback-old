@@ -74,7 +74,7 @@ model Brand {
   logoUrl         String?
   website         String?
   status          BrandStatus   @default(pending)
-  qrPricePerUnit  Decimal       @default(1.00) @db.Decimal(10, 2)
+  qrPricePerUnit  Decimal       @default(1.50) @db.Decimal(10, 2)
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
   vendorId        String?       @unique
@@ -222,7 +222,7 @@ model QROrder {
   campaignId     String
   quantity       Int
   cashbackAmount Decimal     @db.Decimal(10, 2)
-  printCost      Decimal     @default(1.00) @db.Decimal(10, 2)
+  printCost      Decimal     @default(1.50) @db.Decimal(10, 2)
   totalAmount    Decimal     @db.Decimal(12, 2)
   status         OrderStatus @default(pending)
   createdAt      DateTime    @default(now())
@@ -471,7 +471,7 @@ model Coupon {
 
 model SystemSettings {
   id              String   @id @default("default")
-  techFeePerQr    Decimal  @default(1.00) @db.Decimal(10, 2)
+  techFeePerQr    Decimal  @default(1.50) @db.Decimal(10, 2)
   minPayoutAmount Decimal  @default(100.00) @db.Decimal(10, 2)
   maxDailyPayout  Decimal  @default(10000.00) @db.Decimal(12, 2)
   qrExpiryDays    Int      @default(365)
@@ -647,3 +647,5 @@ enum VoucherType {
   printed_qr
   none
 }
+
+
