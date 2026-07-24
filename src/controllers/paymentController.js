@@ -368,6 +368,19 @@ exports.getWithdrawalHistory = async (req, res) => {
     }
 };
 
+// Expose the Razorpay public key from the backend so the frontend does not rely on env fallback.
+exports.getRazorpayConfig = async (req, res) => {
+    try {
+        const keyId = String(process.env.RAZORPAY_KEY_ID || '').trim();
+        if (!keyId) {
+            return res.status(503).json({ message: 'Razorpay is not configured.' });
+        }
+
+        res.json({ keyId });
+    } catch (error) {
+        res.status(500).json({ message: 'Unable to load payment configuration', error: error.message });
+    }
+};
 // --- Razorpay Integration ---
 
 exports.createOrder = async (req, res) => {
@@ -512,3 +525,4 @@ exports.verifyPayment = async (req, res) => {
         res.status(500).json({ message: "Internal Server Error", error: error.message });
     }
 };
+
