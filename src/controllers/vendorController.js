@@ -5016,7 +5016,12 @@ exports.getVendorCustomers = async (req, res) => {
         const { page, limit } = parsePagination(req, { defaultLimit: 25, maxLimit: 200 });
 
         // Strip location/customerIds from DB query — we filter after aggregation.
-        const { location: filterLocation, customerIds: filterCustomerIds, ...dbQueryParams } = req.query;
+        const {
+            location: filterLocation,
+            customerIds: filterCustomerIds,
+            selectedLocation: selectedClusterLocation,
+            ...dbQueryParams
+        } = req.query;
         const where = buildRedemptionEventWhere(vendor, dbQueryParams);
         where.type = 'redeem_success';
         where.userId = { not: null };
@@ -5087,7 +5092,7 @@ exports.getVendorCustomers = async (req, res) => {
         // customer table describe the same place.
         const customersWithCoords = customers.filter((c) => customerCoords.has(c.userId));
 
-        if (customersWithCoords.length > 0) {
+        if (!selectedClusterLocation && customersWithCoords.length > 0) {
             const uniqueCoords = new Map();
             customersWithCoords.forEach((c) => {
                 const coord = customerCoords.get(c.userId);
@@ -5152,6 +5157,16 @@ exports.getVendorCustomers = async (req, res) => {
             });
         }
 
+        // A map-cluster drill-down represents a specific redemption locality.
+        // Customers may have earlier scans elsewhere, so show the selected
+        // cluster label instead of their unrelated first scan location.
+        if (hasCustomerIdFilter && String(selectedClusterLocation || '').trim()) {
+            const locationLabel = String(selectedClusterLocation).trim();
+            customers = customers.map((customer) => ({
+                ...customer,
+                firstScanLocation: locationLabel
+            }));
+        }
         // Post-processing filters on aggregated data
         if (req.query.mobile) {
             const needle = String(req.query.mobile).trim();
@@ -5221,7 +5236,7 @@ exports.exportVendorCustomers = async (req, res) => {
         });
         
         let customerList = Array.from(customerMap.values());
-        
+
         // Post-processing filters on aggregated data
         if (req.query.mobile) {
             const needle = String(req.query.mobile).trim();
