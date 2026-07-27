@@ -15,6 +15,20 @@ const createHttpError = (message, status = 400) => {
     return error;
 };
 
+const CAMPAIGN_UNAVAILABLE_MESSAGE = 'Campaign expired or not started';
+
+const isCampaignRedeemable = (campaign, now = new Date()) => {
+    if (!campaign || campaign.deletedAt) return false;
+    if (String(campaign.status || '').toLowerCase() !== 'active') return false;
+
+    const startDate = new Date(campaign.startDate);
+    const endDate = new Date(campaign.endDate);
+    return !Number.isNaN(startDate.getTime()) &&
+        !Number.isNaN(endDate.getTime()) &&
+        now >= startDate &&
+        now <= endDate;
+};
+
 const toPositiveAmount = (value) => {
     const numeric = Number(value);
     if (!Number.isFinite(numeric) || numeric <= 0) return null;
@@ -99,13 +113,8 @@ const validateQrForRedemption = (qr) => {
     if (!ACTIVE_QR_STATUSES.has(qr.status)) {
         throw createHttpError('QR Code not active', 400);
     }
-    if (!qr.Campaign || qr.Campaign.deletedAt) {
-        throw createHttpError('Campaign not available for this QR', 400);
-    }
-
-    const now = new Date();
-    if (now < new Date(qr.Campaign.startDate) || now > new Date(qr.Campaign.endDate)) {
-        throw createHttpError('Campaign expired or not started', 400);
+    if (!isCampaignRedeemable(qr.Campaign)) {
+        throw createHttpError(CAMPAIGN_UNAVAILABLE_MESSAGE, 400);
     }
 
     const amount = toPositiveAmount(qr.cashbackAmount) || toPositiveAmount(qr.Campaign.cashbackAmount);
@@ -190,14 +199,14 @@ exports.scanAndRedeem = async (req, res) => {
         }
 
         const result = await prisma.$transaction(async (tx) => {
-            // Lock BOTH QR and Wallet row-level to prevent race conditions (Overspending balance)
-            // This forces concurrent redemptions for the same vendor to queue up.
-            const [lockedQr] = await Promise.all([
+            // Lock the QR, campaign, and wallet so a hold cannot race a redemption.
+            const [lockedQr, lockedCampaign] = await Promise.all([
                 tx.$queryRaw`SELECT "id" FROM "QRCode" WHERE "id" = ${previewQr.id} FOR UPDATE`,
+                tx.$queryRaw`SELECT "id" FROM "Campaign" WHERE "id" = ${previewQr.campaignId} FOR UPDATE`,
                 tx.$queryRaw`SELECT "id" FROM "Wallet" WHERE "vendorId" = ${previewQr.vendorId} FOR UPDATE`
             ]);
 
-            if (!Array.isArray(lockedQr) || !lockedQr.length) {
+            if (!Array.isArray(lockedQr) || !lockedQr.length || !Array.isArray(lockedCampaign) || !lockedCampaign.length) {
                 throw createHttpError('Invalid QR Code', 404);
             }
 
@@ -496,13 +505,8 @@ exports.verifyQR = async (req, res) => {
             return res.status(400).json({ message: 'QR Code not active', status: qr.status });
         }
 
-        if (!qr.Campaign || qr.Campaign.deletedAt) {
-            return res.status(400).json({ message: 'Campaign not available for this QR' });
-        }
-
-        const now = new Date();
-        if (now < new Date(qr.Campaign.startDate) || now > new Date(qr.Campaign.endDate)) {
-            return res.status(400).json({ message: 'Campaign expired or not started', qr });
+        if (!isCampaignRedeemable(qr.Campaign)) {
+            return res.status(400).json({ message: CAMPAIGN_UNAVAILABLE_MESSAGE, qr });
         }
 
         const amount = toPositiveAmount(qr.cashbackAmount) || toPositiveAmount(qr.Campaign.cashbackAmount) || 0;

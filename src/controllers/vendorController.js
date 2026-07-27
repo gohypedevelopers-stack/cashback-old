@@ -54,6 +54,21 @@ const CAMPAIGN_QR_DOWNLOAD_CHUNK_MAX = Number.isFinite(Number(process.env.CAMPAI
 const CAMPAIGN_QR_FULL_DOWNLOAD_LIMIT = Number.isFinite(Number(process.env.CAMPAIGN_QR_FULL_DOWNLOAD_LIMIT))
     ? Math.max(1000, Number(process.env.CAMPAIGN_QR_FULL_DOWNLOAD_LIMIT))
     : 10000;
+const INDIAN_STATE_OR_UT_NAMES = new Set([
+    'andhra pradesh', 'arunachal pradesh', 'assam', 'bihar', 'chhattisgarh',
+    'goa', 'gujarat', 'haryana', 'himachal pradesh', 'jharkhand', 'karnataka',
+    'kerala', 'madhya pradesh', 'maharashtra', 'manipur', 'meghalaya', 'mizoram',
+    'nagaland', 'odisha', 'punjab', 'rajasthan', 'sikkim', 'tamil nadu', 'telangana',
+    'tripura', 'uttar pradesh', 'uttarakhand', 'west bengal', 'delhi', 'jammu and kashmir',
+    'ladakh', 'chandigarh', 'puducherry', 'andaman and nicobar islands',
+    'dadra and nagar haveli and daman and diu', 'lakshadweep'
+]);
+
+const isStateOnlyLocation = (city, state) => {
+    const cityValue = String(city || '').trim().toLowerCase();
+    const stateValue = String(state || '').trim().toLowerCase();
+    return Boolean(cityValue) && INDIAN_STATE_OR_UT_NAMES.has(cityValue) && (!stateValue || stateValue === cityValue);
+};
 const reverseGeocodeCache = new Map();
 const reverseGeocodeFailureUntil = new Map();
 let reverseGeocodeQueue = Promise.resolve();
@@ -4908,7 +4923,11 @@ exports.getVendorRedemptionsMap = async (req, res) => {
         // Resolve only records that have coordinates but no captured locality.
         // Results are cached and queued to avoid CORS and 429 browser failures.
         points = await Promise.all(points.map(async (point) => {
-            if (String(point.city || '').trim() || !Number.isFinite(point.lat) || !Number.isFinite(point.lng)) {
+            if (
+                (!isStateOnlyLocation(point.city, point.state) && String(point.city || '').trim()) ||
+                !Number.isFinite(point.lat) ||
+                !Number.isFinite(point.lng)
+            ) {
                 return point;
             }
 
@@ -4918,7 +4937,7 @@ exports.getVendorRedemptionsMap = async (req, res) => {
             // Store the successful result so this coordinate is not looked up again.
             if (point.eventIds.length > 0) {
                 await prisma.redemptionEvent.updateMany({
-                    where: { id: { in: point.eventIds }, city: null },
+                    where: { id: { in: point.eventIds } },
                     data: {
                         city: resolved.city || null,
                         state: resolved.state || null,
