@@ -54,6 +54,59 @@ const CAMPAIGN_QR_DOWNLOAD_CHUNK_MAX = Number.isFinite(Number(process.env.CAMPAI
 const CAMPAIGN_QR_FULL_DOWNLOAD_LIMIT = Number.isFinite(Number(process.env.CAMPAIGN_QR_FULL_DOWNLOAD_LIMIT))
     ? Math.max(1000, Number(process.env.CAMPAIGN_QR_FULL_DOWNLOAD_LIMIT))
     : 10000;
+const reverseGeocodeCache = new Map();
+const reverseGeocodeFailureUntil = new Map();
+let reverseGeocodeQueue = Promise.resolve();
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const reverseGeocodeLocation = (lat, lng) => {
+    const key = `${Number(lat).toFixed(4)}:${Number(lng).toFixed(4)}`;
+    const cached = reverseGeocodeCache.get(key);
+    if (cached) return Promise.resolve(cached);
+    if ((reverseGeocodeFailureUntil.get(key) || 0) > Date.now()) return Promise.resolve(null);
+
+    const task = reverseGeocodeQueue.then(async () => {
+        // Nominatim's public usage policy permits one request per second.
+        await pause(1000);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        try {
+            const url = `https://nominatim.openstreetmap.org/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&format=json&zoom=14&accept-language=en`;
+            const response = await fetch(url, {
+                headers: { 'User-Agent': 'AssuredRewards/1.0 (location analytics)' },
+                signal: controller.signal
+            });
+            if (!response.ok) {
+                reverseGeocodeFailureUntil.set(key, Date.now() + 15 * 60 * 1000);
+                return null;
+            }
+
+            const address = (await response.json())?.address || {};
+            const locality = address.suburb || address.neighbourhood || address.city_district || address.district || '';
+            const city = address.city || address.town || address.village || '';
+            const state = address.state || '';
+            const pincode = address.postcode || '';
+            const cityParts = [...new Set([locality, city].filter(Boolean))];
+            const resolvedCity = cityParts.join(', ');
+            const displayName = [resolvedCity, state].filter(Boolean).join(', ');
+            if (!displayName) return null;
+
+            const result = { city: resolvedCity || city || locality, state, pincode, displayName };
+            reverseGeocodeCache.set(key, result);
+            return result;
+        } catch {
+            reverseGeocodeFailureUntil.set(key, Date.now() + 15 * 60 * 1000);
+            return null;
+        } finally {
+            clearTimeout(timeout);
+        }
+    });
+
+    // Keep the queue usable after an upstream failure.
+    reverseGeocodeQueue = task.catch(() => undefined);
+    return task;
+};
 const LEGACY_BILLABLE_CATEGORIES = [
     'campaign_payment',
     'qr_purchase',
@@ -4808,6 +4861,7 @@ exports.getVendorRedemptionsMap = async (req, res) => {
                 lng: true,
                 city: true,
                 state: true,
+                pincode: true,
                 amount: true,
                 createdAt: true
             },
@@ -4827,12 +4881,14 @@ exports.getVendorRedemptionsMap = async (req, res) => {
                 lng: Number(lng.toFixed(4)),
                 count: 0,
                 customerIds: new Set(),
+                eventIds: [],
                 totalAmount: 0,
                 city: event.city || null,
                 state: event.state || null,
                 latestAt: event.createdAt
             };
             current.count += 1;
+            current.eventIds.push(event.id);
             if (event.userId) {
                 current.customerIds.add(String(event.userId));
             }
@@ -4843,16 +4899,41 @@ exports.getVendorRedemptionsMap = async (req, res) => {
             pointsMap.set(key, current);
         });
 
-        const points = Array.from(pointsMap.values()).map((point) => ({
+        let points = Array.from(pointsMap.values()).map((point) => ({
             ...point,
             customerIds: Array.from(point.customerIds || []),
             customerCount: (point.customerIds && point.customerIds.size) || 0
         }));
 
+        // Resolve only records that have coordinates but no captured locality.
+        // Results are cached and queued to avoid CORS and 429 browser failures.
+        points = await Promise.all(points.map(async (point) => {
+            if (String(point.city || '').trim() || !Number.isFinite(point.lat) || !Number.isFinite(point.lng)) {
+                return point;
+            }
+
+            const resolved = await reverseGeocodeLocation(point.lat, point.lng);
+            if (!resolved) return point;
+
+            // Store the successful result so this coordinate is not looked up again.
+            if (point.eventIds.length > 0) {
+                await prisma.redemptionEvent.updateMany({
+                    where: { id: { in: point.eventIds }, city: null },
+                    data: {
+                        city: resolved.city || null,
+                        state: resolved.state || null,
+                        pincode: resolved.pincode || null
+                    }
+                });
+            }
+            return { ...point, ...resolved };
+        }));
+
+        const responsePoints = points.map(({ eventIds, ...point }) => point);
         res.json({
-            totalPoints: points.filter((point) => point.customerCount > 0).length,
+            totalPoints: responsePoints.filter((point) => point.customerCount > 0).length,
             totalEvents: events.length,
-            points
+            points: responsePoints
         });
     } catch (error) {
         res.status(500).json({ message: 'Failed to fetch map data', error: error.message });
