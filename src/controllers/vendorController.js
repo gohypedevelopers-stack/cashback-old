@@ -1,4 +1,4 @@
-﻿const prisma = require('../config/prismaClient');
+const prisma = require('../config/prismaClient');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { parsePagination } = require('../utils/pagination');
@@ -4934,8 +4934,8 @@ exports.getVendorCustomers = async (req, res) => {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
         const { page, limit } = parsePagination(req, { defaultLimit: 25, maxLimit: 200 });
 
-        // Strip location from DB query — we filter on firstScanLocation post-processing instead.
-        const { location: filterLocation, ...dbQueryParams } = req.query;
+        // Strip location/customerIds from DB query — we filter after aggregation.
+        const { location: filterLocation, customerIds: filterCustomerIds, ...dbQueryParams } = req.query;
         const where = buildRedemptionEventWhere(vendor, dbQueryParams);
         where.type = 'redeem_success';
         where.userId = { not: null };
@@ -4989,6 +4989,18 @@ exports.getVendorCustomers = async (req, res) => {
             ...entry,
             rewardsEarned: toNumber(entry.rewardsEarned, 0)
         }));
+
+        const customerIdSet = new Set(
+            String(filterCustomerIds || "")
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean)
+        );
+        const hasCustomerIdFilter = customerIdSet.size > 0;
+
+        if (hasCustomerIdFilter) {
+            customers = customers.filter((entry) => customerIdSet.has(String(entry.userId)));
+        }
 
         // Reverse geocode every customer's first known coordinate so the map and
         // customer table describe the same place.
@@ -5064,7 +5076,7 @@ exports.getVendorCustomers = async (req, res) => {
             const needle = String(req.query.mobile).trim();
             customers = customers.filter((entry) => String(entry.mobile || '').includes(needle));
         }
-        if (req.query.location) {
+        if (!hasCustomerIdFilter && req.query.location) {
             const needle = String(req.query.location).trim().toLowerCase();
             customers = customers.filter((entry) => String(entry.firstScanLocation || '').toLowerCase().includes(needle));
         }
