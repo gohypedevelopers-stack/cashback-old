@@ -1,4 +1,4 @@
-const prisma = require('../config/prismaClient');
+﻿const prisma = require('../config/prismaClient');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { parsePagination } = require('../utils/pagination');
@@ -4803,6 +4803,7 @@ exports.getVendorRedemptionsMap = async (req, res) => {
             where,
             select: {
                 id: true,
+                userId: true,
                 lat: true,
                 lng: true,
                 city: true,
@@ -4825,12 +4826,16 @@ exports.getVendorRedemptionsMap = async (req, res) => {
                 lat: Number(lat.toFixed(4)),
                 lng: Number(lng.toFixed(4)),
                 count: 0,
+                customerIds: new Set(),
                 totalAmount: 0,
                 city: event.city || null,
                 state: event.state || null,
                 latestAt: event.createdAt
             };
             current.count += 1;
+            if (event.userId) {
+                current.customerIds.add(String(event.userId));
+            }
             current.totalAmount = toNumber(current.totalAmount + Number(event.amount || 0), 0);
             if (new Date(event.createdAt) > new Date(current.latestAt)) {
                 current.latestAt = event.createdAt;
@@ -4838,10 +4843,16 @@ exports.getVendorRedemptionsMap = async (req, res) => {
             pointsMap.set(key, current);
         });
 
+        const points = Array.from(pointsMap.values()).map((point) => ({
+            ...point,
+            customerIds: Array.from(point.customerIds || []),
+            customerCount: (point.customerIds && point.customerIds.size) || 0
+        }));
+
         res.json({
-            totalPoints: pointsMap.size,
+            totalPoints: points.filter((point) => point.customerCount > 0).length,
             totalEvents: events.length,
-            points: Array.from(pointsMap.values())
+            points
         });
     } catch (error) {
         res.status(500).json({ message: 'Failed to fetch map data', error: error.message });
@@ -4939,7 +4950,7 @@ exports.getVendorCustomers = async (req, res) => {
         });
 
         const customerMap = new Map();
-        // Track first lat/lng per customer for reverse geocoding
+        // Track first lat/lng per customer so the display location matches the map source.
         const customerCoords = new Map();
 
         events.forEach((event) => {
@@ -4961,14 +4972,11 @@ exports.getVendorCustomers = async (req, res) => {
                     memberSince: event.createdAt,
                     lastScanned: event.createdAt
                 });
-                // Store coords for geocoding if location is missing or simple
-                const isSimple = !locationStr || !locationStr.includes(',') || locationStr.split(',').length < 2;
-                if (isSimple) {
-                    const lat = Number(event.lat);
-                    const lng = Number(event.lng);
-                    if (Number.isFinite(lat) && Number.isFinite(lng)) {
-                        customerCoords.set(userId, { lat, lng, eventId: event.id });
-                    }
+
+                const lat = Number(event.lat);
+                const lng = Number(event.lng);
+                if (Number.isFinite(lat) && Number.isFinite(lng)) {
+                    customerCoords.set(userId, { lat, lng, eventId: event.id });
                 }
                 return;
             }
@@ -4982,25 +4990,19 @@ exports.getVendorCustomers = async (req, res) => {
             rewardsEarned: toNumber(entry.rewardsEarned, 0)
         }));
 
-        // Reverse geocode customers if location is missing or too simple (e.g., just city)
-        const needsGeocode = customers.filter((c) => {
-            if (!customerCoords.has(c.userId)) return false;
-            // Geocode if missing ('-') or very short (like only city name)
-            const loc = c.firstScanLocation || '';
-            return loc === '-' || !loc.includes(',') || loc.split(',').length < 2;
-        });
+        // Reverse geocode every customer's first known coordinate so the map and
+        // customer table describe the same place.
+        const customersWithCoords = customers.filter((c) => customerCoords.has(c.userId));
 
-        if (needsGeocode.length > 0) {
-            // Deduplicate coordinates (round to 3 decimals)
+        if (customersWithCoords.length > 0) {
             const uniqueCoords = new Map();
-            needsGeocode.forEach((c) => {
+            customersWithCoords.forEach((c) => {
                 const coord = customerCoords.get(c.userId);
                 if (!coord) return;
                 const key = `${coord.lat.toFixed(3)}_${coord.lng.toFixed(3)}`;
                 if (!uniqueCoords.has(key)) {
-                    uniqueCoords.set(key, { lat: coord.lat, lng: coord.lng, eventIds: [] });
+                    uniqueCoords.set(key, { lat: coord.lat, lng: coord.lng });
                 }
-                uniqueCoords.get(key).eventIds.push(coord.eventId);
             });
 
             const resolved = new Map();
@@ -5027,48 +5029,32 @@ exports.getVendorCustomers = async (req, res) => {
                         const district = addr.city_district || addr.district || '';
                         const city = addr.city || addr.town || addr.village || '';
                         const state = addr.state || '';
-                        
+
                         const displayParts = [landmark, road, area, district, city, state]
                             .filter(Boolean)
-                            .map(s => s.trim());
-                        
+                            .map((s) => s.trim());
+
                         const uniqueParts = [];
-                        displayParts.forEach(p => {
+                        displayParts.forEach((p) => {
                             if (uniqueParts.length === 0 || uniqueParts[uniqueParts.length - 1] !== p) {
                                 uniqueParts.push(p);
                             }
                         });
-                        
+
                         const locationStr = uniqueParts.join(', ') || 'Unknown';
-                        resolved.set(key, { locationStr, city, state });
-
-                        const dbCityParts = [landmark, road, area, district, city]
-                            .filter(Boolean)
-                            .map(s => s.trim());
-                        const dbCity = dbCityParts.join(', ');
-
-                        if (dbCity || state) {
-                            prisma.redemptionEvent.updateMany({
-                                where: { id: { in: coord.eventIds } },
-                                data: {
-                                    ...(dbCity ? { city: dbCity } : {}),
-                                    ...(state ? { state } : {})
-                                }
-                            }).catch(() => { /* ignore */ });
-                        }
+                        resolved.set(key, { locationStr });
                     }
                 } catch {
                     // Skip on timeout or error
                 }
             }
 
-            // Apply resolved locations to customers
             customers = customers.map((c) => {
                 const coord = customerCoords.get(c.userId);
                 if (!coord) return c;
                 const key = `${coord.lat.toFixed(3)}_${coord.lng.toFixed(3)}`;
                 const loc = resolved.get(key);
-                if (loc) return { ...c, firstScanLocation: loc.locationStr };
+                if (loc?.locationStr) return { ...c, firstScanLocation: loc.locationStr };
                 return c;
             });
         }
