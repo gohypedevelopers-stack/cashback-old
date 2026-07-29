@@ -134,36 +134,43 @@ const renderInvoiceToBuffer = (invoice) => {
         const M = 50; // margin
         const CONTENT_W = PAGE_W - M * 2;
 
-        // Muted invoice palette (less saturated green).
-        const GREEN = '#334155';
-        const DARK = '#111827';
-        const GRAY = '#6B7280';
-        const LIGHT_BG = '#F1F5F9';
+        // Assured Rewards invoice palette, aligned with the vendor dashboard.
+        const GREEN = '#009E6D';
+        const GREEN_DARK = '#007A55';
+        const DARK = '#102A43';
+        const GRAY = '#64748B';
+        const LIGHT_BG = '#EAFBF4';
+        const BORDER = '#D7E8E1';
         const WHITE = '#FFFFFF';
 
         // ──────────────── HEADER ────────────────
+        // Branded header panel.
+        doc.roundedRect(M, M, CONTENT_W, 76, 14).fill(LIGHT_BG);
+
         // Assured Rewards logo
         const logoSize = 60;
         const logoPath = path.resolve(__dirname, '..', '..', '..', '..', 'public', 'light theme incentify logo.png');
         try {
             if (fs.existsSync(logoPath)) {
-                doc.image(logoPath, M, M, { width: logoSize, height: logoSize });
+                doc.image(logoPath, M + 12, M + 8, { width: logoSize, height: logoSize });
             }
         } catch (_e) { /* silently skip if logo not found */ }
 
         // Company name + address (right side)
         const companyName = invoice?.Brand?.name || 'Assured Rewards';
         doc.fillColor(GREEN).fontSize(16).font('Helvetica-Bold')
-            .text(companyName, M + 70, M, { align: 'right', width: CONTENT_W - 70 });
+            .text(companyName, M + 84, M + 16, { align: 'right', width: CONTENT_W - 104 });
         doc.fillColor(GRAY).fontSize(8).font('Helvetica')
-            .text('Assured Rewards Platform', M + 70, M + 20, { align: 'right', width: CONTENT_W - 70 })
-            .text('Billing & Invoicing', M + 70, M + 30, { align: 'right', width: CONTENT_W - 70 })
-            .text('India', M + 70, M + 40, { align: 'right', width: CONTENT_W - 70 });
+            .text('ASSURED REWARDS PLATFORM', M + 84, M + 37, { align: 'right', width: CONTENT_W - 104 })
+            .text('Billing & Invoicing  |  India', M + 84, M + 49, { align: 'right', width: CONTENT_W - 104 });
 
         // ──────────────── INVOICE TITLE ────────────────
-        let y = M + logoSize + 24;
-        doc.fillColor(DARK).fontSize(22).font('Helvetica-Bold')
-            .text('INVOICE', M, y, { align: 'center', width: CONTENT_W });
+        let y = M + 98;
+        doc.fillColor(DARK).fontSize(24).font('Helvetica-Bold')
+            .text('INVOICE', M, y, { width: CONTENT_W - 120 });
+        doc.roundedRect(PAGE_W - M - 120, y + 2, 120, 22, 11).fill(GREEN);
+        doc.fillColor(WHITE).fontSize(8).font('Helvetica-Bold')
+            .text(String(invoice.type || 'INVOICE').replace(/_/g, ' ').toUpperCase(), PAGE_W - M - 114, y + 9, { width: 108, align: 'center' });
 
         // ──────────────── BILL TO ────────────────
         y += 36;
@@ -187,7 +194,7 @@ const renderInvoiceToBuffer = (invoice) => {
         // ──────────────── DATE ROW (Green bar) ────────────────
         y += 12;
         const dateRowH = 28;
-        doc.rect(M, y, CONTENT_W, dateRowH).fill(GREEN);
+        doc.roundedRect(M, y, CONTENT_W, dateRowH, 5).fill(GREEN);
 
         const issuedDate = invoice.issuedAt ? new Date(invoice.issuedAt) : new Date();
         const formattedDate = issuedDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -219,7 +226,7 @@ const renderInvoiceToBuffer = (invoice) => {
         const headerH = 24;
 
         const drawHeader = () => {
-            doc.rect(tblX, y, CONTENT_W, headerH).fill(GREEN);
+            doc.roundedRect(tblX, y, CONTENT_W, headerH, 5).fill(GREEN);
             doc.fillColor(WHITE).fontSize(8).font('Helvetica-Bold');
             doc.text('#', tblX + 6, y + 8, { width: col0 });
             doc.text('Item & Description', tblX + col0 + 6, y + 8, { width: col1 });
@@ -253,7 +260,7 @@ const renderInvoiceToBuffer = (invoice) => {
 
                 // Alternating row background
                 if (index % 2 === 1) {
-                    doc.rect(tblX, y, CONTENT_W, rowH).fill('#F9FAFB');
+                    doc.rect(tblX, y, CONTENT_W, rowH).fill(LIGHT_BG);
                 }
 
                 const label = item.label || 'Item';
@@ -280,7 +287,7 @@ const renderInvoiceToBuffer = (invoice) => {
                 y += rowH;
 
                 // Row bottom border
-                doc.moveTo(tblX, y).lineTo(tblX + CONTENT_W, y).strokeColor('#E5E7EB').lineWidth(0.5).stroke();
+                doc.moveTo(tblX, y).lineTo(tblX + CONTENT_W, y).strokeColor(BORDER).lineWidth(0.5).stroke();
             });
         }
 
@@ -315,14 +322,17 @@ const renderInvoiceToBuffer = (invoice) => {
             y = M;
         }
 
-        doc.fillColor(GRAY).fontSize(9).font('Helvetica-Oblique')
-            .text('Thank you for your business.', M, y);
+        doc.roundedRect(M, y, 230, 48, 10).fill(LIGHT_BG);
+        doc.fillColor(GREEN_DARK).fontSize(10).font('Helvetica-Bold')
+            .text('Thank you for your business.', M + 14, y + 12);
+        doc.fillColor(GRAY).fontSize(8).font('Helvetica')
+            .text('Your transaction is securely recorded.', M + 14, y + 27);
 
         const summaryStartY = y;
         const rowH = 20;
 
         // Sub Total
-        doc.rect(summaryX, summaryStartY, summaryW, rowH).fill('#F9FAFB');
+        doc.roundedRect(summaryX, summaryStartY, summaryW, rowH, 5).fill(LIGHT_BG);
         doc.fillColor(GRAY).fontSize(9).font('Helvetica')
             .text('Sub Total', summaryX + 10, summaryStartY + 5, { width: 100 });
         doc.fillColor(DARK).fontSize(9).font('Helvetica-Bold')
@@ -350,26 +360,30 @@ const renderInvoiceToBuffer = (invoice) => {
 
         // Balance Due
         const balY = totalY + rowH + 2;
-        doc.rect(summaryX, balY, summaryW, rowH + 2).fill('#FEE2E2');
-        doc.fillColor('#B91C1C').fontSize(9).font('Helvetica-Bold')
+        doc.roundedRect(summaryX, balY, summaryW, rowH + 2, 5).fill('#DCFCE7');
+        doc.fillColor(GREEN_DARK).fontSize(9).font('Helvetica-Bold')
             .text('Balance Due', summaryX + 10, balY + 6, { width: 100 });
-        doc.fillColor('#B91C1C').fontSize(9).font('Helvetica-Bold')
+        doc.fillColor(GREEN_DARK).fontSize(9).font('Helvetica-Bold')
             .text(formatCurrency(total), summaryX + 80, balY + 6, { width: 100, align: 'right' });
 
         // ──────────────── TERMS & CONDITIONS ────────────────
-        doc.fillColor('#1F2937').fontSize(9).font('Helvetica-Bold')
-            .text('Terms & Conditions', M, balY + rowH + 15);
-        doc.fillColor('#4B5563').fontSize(8).font('Helvetica')
+        const termsY = balY + rowH + 18;
+        doc.roundedRect(M, termsY, CONTENT_W, 72, 10).fill('#F8FAFC');
+        doc.fillColor(DARK).fontSize(9).font('Helvetica-Bold')
+            .text('Terms & Conditions', M + 14, termsY + 12);
+        doc.fillColor(GRAY).fontSize(8).font('Helvetica')
             .text([
                 '1. All payments are non-refundable.',
                 '2. Please mention the invoice number in your bank transfer reference.',
                 '3. Goods once sold will not be taken back.',
                 '4. This is a computer-generated invoice and does not require a signature.'
-            ].join('\n'), M, balY + rowH + 28, { width: CONTENT_W });
+            ].join('\n'), M + 14, termsY + 26, { width: CONTENT_W - 28 });
 
         // ──────────────── FOOTER ────────────────
-        doc.fillColor('#9CA3AF').fontSize(7).font('Helvetica')
-            .text('Generated by Assured Rewards Billing Engine', M, doc.page.height - 40, { align: 'center', width: CONTENT_W });
+        doc.moveTo(M, doc.page.height - 44).lineTo(PAGE_W - M, doc.page.height - 44).strokeColor(BORDER).lineWidth(0.8).stroke();
+        doc.fillColor(GRAY).fontSize(7).font('Helvetica')
+            .text('Generated by Assured Rewards Billing Engine', M, doc.page.height - 34, { width: CONTENT_W / 2 })
+            .text('Thank you for choosing Assured Rewards', M + CONTENT_W / 2, doc.page.height - 34, { width: CONTENT_W / 2, align: 'right' });
 
         doc.end();
     });

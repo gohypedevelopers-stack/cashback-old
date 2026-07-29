@@ -21,16 +21,49 @@ const path = require('path');
 const { startBulkExportWorker } = require('./services/bulkQrExportService');
 
 const app = express();
-const allowedOrigins = process.env.ALLOWED_ORIGINS 
-    ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim()) 
-    : ['http://localhost:3000', 'http://localhost:5173'];
+
+const normalizeOrigin = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+
+    const candidate = raw.replace(/\/+$/, '');
+
+    if (candidate === '*') {
+        return '*';
+    }
+
+    try {
+        const url = new URL(candidate.includes('://') ? candidate : `https://${candidate}`);
+        return `${url.protocol}//${url.host}`;
+    } catch {
+        return null;
+    }
+};
+
+const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'https://bulkcoupon.vercel.app',
+    'https://bulkcoupon.assuredrewards.in',
+    ...String(process.env.ALLOWED_ORIGINS || '')
+        .split(',')
+        .map(normalizeOrigin)
+        .filter(Boolean),
+];
+
+const allowedOriginSet = new Set(allowedOrigins.map(normalizeOrigin).filter(Boolean));
 
 const corsOptions = {
     origin: (origin, callback) => {
         // Allow requests with no origin (like mobile apps or curl)
         if (!origin) return callback(null, true);
-        
-        if (allowedOrigins.includes('*') || allowedOrigins.indexOf(origin) !== -1) {
+
+        const normalizedOrigin = normalizeOrigin(origin);
+
+        if (
+            allowedOriginSet.has('*') ||
+            (normalizedOrigin && allowedOriginSet.has(normalizedOrigin))
+        ) {
             callback(null, true);
         } else {
             const error = new Error('Not allowed by CORS');
