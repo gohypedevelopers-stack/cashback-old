@@ -261,7 +261,9 @@ exports.getHomeData = async (req, res) => {
             // Always display active campaigns; if we can't determine a number, default to 0 to show "Offer"
             topOffers.push({
                 id: entityId,
+                productId: camp.productId || null,
                 brandId: camp.brandId,
+                targetType: camp.productId ? 'product' : 'brand',
                 name: entityName,
                 logoUrl: logoUrl,
                 brandName: brandName,
