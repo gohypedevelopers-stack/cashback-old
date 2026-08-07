@@ -535,9 +535,7 @@ exports.getBrandDetails = async (req, res) => {
         if (!brand) return res.status(404).json({ message: 'Brand not found' });
 
         const productCampaignMap = new Map();
-        let fallbackCampaign = null;
         activeCampaigns.forEach((campaign) => {
-            if (!fallbackCampaign) fallbackCampaign = campaign;
             if (campaign.productId && !productCampaignMap.has(campaign.productId)) {
                 productCampaignMap.set(campaign.productId, campaign);
             }
@@ -545,7 +543,7 @@ exports.getBrandDetails = async (req, res) => {
 
         const mapReward = (campaign, productId) => getCampaignRewardLabel(campaign, productId);
 
-        const mapScheme = (campaign) => campaign?.title || 'Standard Offer';
+        const mapScheme = (campaign) => campaign?.title || null;
 
         // Shape data for frontend
         const brandData = {
@@ -563,7 +561,7 @@ exports.getBrandDetails = async (req, res) => {
             ],
             tags: ['Verified', 'Premium'],
             products: brand.Products.map((p) => {
-                const linkedCampaign = productCampaignMap.get(p.id) || fallbackCampaign;
+                const linkedCampaign = productCampaignMap.get(p.id) || null;
                 return {
                     id: p.id,
                     brandId: p.brandId,
