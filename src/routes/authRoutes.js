@@ -15,6 +15,8 @@ const {
     checkUsername,
     sendEmailVerificationOtp,
     verifyEmailVerificationOtp,
+    sendVendorPhoneOtp,
+    verifyVendorPhoneOtp,
     googleLogin
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
@@ -29,6 +31,8 @@ router.post('/send-otp', sendOtp);
 router.post('/verify-otp', verifyOtp);
 router.post('/send-email-otp', sendEmailOtp);
 router.post('/send-email-verification-otp', sendEmailVerificationOtp);
+router.post('/send-vendor-phone-otp', sendVendorPhoneOtp);
+router.post('/verify-vendor-phone-otp', verifyVendorPhoneOtp);
 router.post('/verify-email-verification-otp', verifyEmailVerificationOtp);
 router.post('/reset-password-otp', resetPasswordWithOtp);
 

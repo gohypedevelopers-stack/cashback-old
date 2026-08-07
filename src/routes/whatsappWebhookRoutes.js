@@ -22,7 +22,24 @@ router.post('/', (req, res) => {
   
   if (value?.statuses?.[0]) {
     const status = value.statuses[0];
-    console.log(`[WhatsApp Webhook] Status update: ${status.status} for ${status.recipient_id}`);
+    const recipient = String(status.recipient_id || "");
+    const recipientMask = recipient ? "***" + recipient.slice(-4) : "unknown";
+    const details = {
+      status: status.status,
+      recipient: recipientMask,
+      messageId: status.id,
+      errors: status.errors?.map((error) => ({
+        code: error.code,
+        title: error.title,
+        details: error.details
+      }))
+    };
+
+    if (status.status === "failed") {
+      console.error("[WhatsApp Webhook] Delivery failed", details);
+    } else {
+      console.info("[WhatsApp Webhook] Delivery status", details);
+    }
   }
   
   res.sendStatus(200);

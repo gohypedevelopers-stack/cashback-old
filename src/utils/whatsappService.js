@@ -20,7 +20,8 @@ const getWhatsAppConfig = () => {
       process.env.WHATSAPP_GRAPH_VERSION &&
       process.env.WHATSAPP_PHONE_NUMBER_ID &&
       process.env.WHATSAPP_PHONE_NUMBER_ID !== 'your_phone_number_id' &&
-      process.env.WHATSAPP_ACCESS_TOKEN
+      process.env.WHATSAPP_ACCESS_TOKEN &&
+      process.env.WHATSAPP_OTP_TEMPLATE_NAME
     )
   };
 };
@@ -52,9 +53,9 @@ const sendWhatsappOtp = async ({ to, otpCode }) => {
   const config = getWhatsAppConfig();
 
   if (!config.isConfigured) {
-    console.warn("[WhatsApp OTP] Missing configuration. Falling back to console logging.");
-    console.log(`[DEV] WhatsApp OTP for ${maskPhone(to)}: ${otpCode}`);
-    return { delivered: true, simulated: true };
+    const error = "WhatsApp OTP is not configured. Set the Cloud API, access-token, and approved-template environment variables.";
+    console.error("[WhatsApp OTP] " + error);
+    return { delivered: false, error };
   }
 
   // Ensure country code is present (must start with country code, e.g. 91 for India)
@@ -78,6 +79,12 @@ const sendWhatsappOtp = async ({ to, otpCode }) => {
   };
 
   try {
+    console.info("[WhatsApp OTP] Sending template", {
+      to: maskPhone(cleaned),
+      template: config.templateName,
+      language: config.templateLanguage,
+      graphVersion: config.graphVersion
+    });
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -90,11 +97,21 @@ const sendWhatsappOtp = async ({ to, otpCode }) => {
     const data = await response.json().catch(() => null);
 
     if (!response.ok) {
-      console.error("[WhatsApp Send Error]:", data?.error || data);
+      console.error("[WhatsApp Send Error]", {
+        status: response.status,
+        code: data?.error?.code,
+        subcode: data?.error?.error_subcode,
+        message: data?.error?.message || "Unable to send WhatsApp verification code."
+      });
       return { delivered: false, error: data?.error?.message || "Unable to send WhatsApp verification code." };
     }
 
-    return { delivered: true, id: data?.messages?.[0]?.id };
+    const messageId = data?.messages?.[0]?.id;
+    console.info("[WhatsApp OTP] Accepted by Meta", {
+      to: maskPhone(cleaned),
+      messageId
+    });
+    return { delivered: true, id: messageId };
   } catch (error) {
     console.error("[WhatsApp Send Exception]:", error);
     return { delivered: false, error: error.message };

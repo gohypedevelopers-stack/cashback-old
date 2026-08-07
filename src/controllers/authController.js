@@ -317,6 +317,108 @@ setInterval(() => {
     }
 }, 10 * 60 * 1000);
 
+const VENDOR_PHONE_OTP_TTL_MS = 5 * 60 * 1000;
+const VENDOR_PHONE_OTP_COOLDOWN_MS = 30 * 1000;
+const pendingVendorPhoneOtps = new Map();
+
+const normalizeIndianMobileNumber = (value) =>
+    String(value || '').replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+
+const isValidIndianMobileNumber = (value) => /^[6-9]\d{9}$/.test(value);
+
+setInterval(() => {
+    const now = Date.now();
+    for (const [phoneNumber, data] of pendingVendorPhoneOtps.entries()) {
+        if (now > data.otpExpiresAt) {
+            pendingVendorPhoneOtps.delete(phoneNumber);
+        }
+    }
+}, 10 * 60 * 1000);
+
+exports.sendVendorPhoneOtp = async (req, res) => {
+    const phoneNumber = normalizeIndianMobileNumber(req.body?.phoneNumber);
+
+    if (!isValidIndianMobileNumber(phoneNumber)) {
+        return res.status(400).json({
+            message: 'Enter a valid 10-digit Indian mobile number.'
+        });
+    }
+
+    try {
+        const pending = pendingVendorPhoneOtps.get(phoneNumber);
+        const now = Date.now();
+        if (pending && now - pending.otpLastSentAt < VENDOR_PHONE_OTP_COOLDOWN_MS) {
+            const retryAfterSeconds = Math.ceil(
+                (VENDOR_PHONE_OTP_COOLDOWN_MS - (now - pending.otpLastSentAt)) / 1000
+            );
+            return res.status(429).json({
+                message: 'Please wait ' + retryAfterSeconds + ' seconds before requesting another OTP.'
+            });
+        }
+
+        const otp = generateOTP();
+        const whatsappResult = await sendWhatsappOtp({ to: phoneNumber, otpCode: otp });
+        if (!whatsappResult.delivered) {
+            return res.status(502).json({
+                message: whatsappResult.error || 'Unable to send the WhatsApp OTP. Please try again.'
+            });
+        }
+
+        pendingVendorPhoneOtps.set(phoneNumber, {
+            otp,
+            otpExpiresAt: now + VENDOR_PHONE_OTP_TTL_MS,
+            otpLastSentAt: now
+        });
+
+        res.json({
+            success: true,
+            message: 'OTP accepted by Meta for WhatsApp delivery.',
+            providerMessageId: whatsappResult.id || null
+        });
+    } catch (error) {
+        console.error('[VENDOR WHATSAPP OTP ERROR]', error);
+        res.status(500).json({
+            message: 'Unable to send the WhatsApp OTP. Please try again.'
+        });
+    }
+};
+
+exports.verifyVendorPhoneOtp = async (req, res) => {
+    const phoneNumber = normalizeIndianMobileNumber(req.body?.phoneNumber);
+    const otp = String(req.body?.otp || '').trim();
+
+    if (!isValidIndianMobileNumber(phoneNumber)) {
+        return res.status(400).json({
+            message: 'Enter a valid 10-digit Indian mobile number.'
+        });
+    }
+    if (!/^\d{6}$/.test(otp)) {
+        return res.status(400).json({ message: 'Enter a valid 6-digit OTP.' });
+    }
+
+    const pending = pendingVendorPhoneOtps.get(phoneNumber);
+    if (!pending) {
+        return res.status(400).json({
+            message: 'Request a new WhatsApp OTP before verifying.'
+        });
+    }
+    if (Date.now() > pending.otpExpiresAt) {
+        pendingVendorPhoneOtps.delete(phoneNumber);
+        return res.status(400).json({
+            message: 'This OTP has expired. Request a new code.'
+        });
+    }
+    if (pending.otp !== otp) {
+        return res.status(400).json({ message: 'Incorrect WhatsApp OTP.' });
+    }
+
+    pendingVendorPhoneOtps.delete(phoneNumber);
+    res.json({
+        success: true,
+        message: 'Phone number verified successfully.'
+    });
+};
+
 exports.sendOtp = async (req, res) => {
     const { email, phoneNumber, name, dob } = req.body; 
  
