@@ -85,6 +85,13 @@ const sendWhatsappOtp = async ({ to, otpCode }) => {
       language: config.templateLanguage,
       graphVersion: config.graphVersion
     });
+    // Log OTP in terminal for local development
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`\n========================================`);
+      console.log(`OTP CODE: ${otpCode}`);
+      console.log(`Phone: ${maskPhone(cleaned)}`);
+      console.log(`========================================\n`);
+    }
     const response = await fetch(url, {
       method: "POST",
       headers: {
