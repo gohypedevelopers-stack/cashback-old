@@ -865,6 +865,534 @@ exports.updateVendorCredentials = async (req, res) => {
     }
 };
 
+// ─── Compliance & Audit Controllers ──────────────────────────────────────────
+
+/**
+ * GET /api/admin/compliance/campaign-summary
+ * Returns per-campaign data for Table 1 of the monthly compliance report.
+ * Supports optional startDate / endDate / limit query params.
+ */
+exports.getCampaignComplianceSummary = async (req, res) => {
+    try {
+        const { startDate, endDate, limit = '200', vendorId, brandId } = req.query;
+        const take = Math.min(Number(limit) || 200, 500);
+
+        const where = { deletedAt: null };
+        if (startDate || endDate) {
+            where.startDate = {};
+            if (startDate) where.startDate.gte = new Date(startDate);
+            if (endDate) where.startDate.lte = new Date(endDate);
+        }
+        if (brandId && brandId !== 'all') {
+            where.brandId = brandId;
+        } else if (vendorId && vendorId !== 'all') {
+            where.Brand = { vendorId };
+        }
+
+        const campaigns = await prisma.campaign.findMany({
+            where,
+            take,
+            orderBy: { startDate: 'desc' },
+            include: {
+                Brand: { 
+                    select: { 
+                        id: true, 
+                        name: true, 
+                        vendorId: true,
+                        Vendor: {
+                            select: {
+                                id: true,
+                                businessName: true,
+                            }
+                        }
+                    } 
+                },
+                CampaignBudgets: { select: { lockedAmount: true, spentAmount: true, initialLockedAmount: true } },
+                _count: { select: { QRCodes: true } },
+            },
+        });
+
+        // Count redeemed QRs per campaign
+        const campaignIds = campaigns.map(c => c.id);
+        const redeemedCounts = campaignIds.length
+            ? await prisma.qRCode.groupBy({
+                by: ['campaignId'],
+                where: { campaignId: { in: campaignIds }, status: 'redeemed' },
+                _count: { id: true },
+            })
+            : [];
+        const redeemedMap = Object.fromEntries(redeemedCounts.map(r => [r.campaignId, r._count.id]));
+
+        const result = campaigns.map(c => {
+            const totalBudget = c.CampaignBudgets.reduce((sum, b) => sum + Number(b.initialLockedAmount || 0), 0);
+            const spentBudget = c.CampaignBudgets.reduce((sum, b) => sum + Number(b.spentAmount || 0), 0);
+            return {
+                id: c.id,
+                title: c.title,
+                brandName: c.Brand?.name || '',
+                brandId: c.brandId,
+                vendorId: c.Brand?.vendorId || c.Brand?.Vendor?.id || null,
+                vendorName: c.Brand?.Vendor?.businessName || c.Brand?.name || '',
+                startDate: c.startDate,
+                endDate: c.endDate,
+                status: c.status,
+                totalBudget,
+                spentBudget,
+                cashbackAmount: c.cashbackAmount,
+                totalQrs: c._count.QRCodes,
+                redeemedQrs: redeemedMap[c.id] || 0,
+            };
+        });
+
+        res.json({ campaigns: result, total: result.length });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to fetch campaign summary', error: error.message });
+    }
+};
+
+/**
+ * GET /api/admin/compliance/payout-mapping
+ * Returns payouts (withdrawals + their linked campaign via CampaignBudget chain).
+ * Flags any payout where campaign mapping is missing.
+ */
+exports.getPayoutCampaignMapping = async (req, res) => {
+    try {
+        const { limit = '200' } = req.query;
+        const take = Math.min(Number(limit) || 200, 500);
+
+        const withdrawals = await prisma.withdrawal.findMany({
+            take,
+            orderBy: { createdAt: 'desc' },
+            include: {
+                Wallet: {
+                    include: {
+                        Transactions: {
+                            take: 1,
+                            orderBy: { createdAt: 'desc' },
+                            where: { type: 'debit', category: 'cashback' },
+                            include: {
+                                CampaignBudget: {
+                                    include: {
+                                        Campaign: { select: { id: true, title: true } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        const payouts = withdrawals.map(w => {
+            const linkedTx = w.Wallet?.Transactions?.[0];
+            const campaign = linkedTx?.CampaignBudget?.Campaign;
+            return {
+                id: w.id,
+                amount: w.amount,
+                status: w.status,
+                createdAt: w.createdAt,
+                campaignId: campaign?.id || null,
+                campaignTitle: campaign?.title || null,
+            };
+        });
+
+        const mappedCount = payouts.filter(p => p.campaignId).length;
+        res.json({ payouts, totalPayouts: payouts.length, mappedCount });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to fetch payout mapping', error: error.message });
+    }
+};
+
+/**
+ * GET /api/admin/compliance/exceptions
+ * Detects suspicious redemption patterns in the last 30 days.
+ * Flags: high frequency (>5 QRs/24h per user), date boundary violations, amount deviations (>2× average).
+ */
+exports.getExceptionReport = async (req, res) => {
+    try {
+        const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+        // Load recent redemption events
+        const events = await prisma.redemptionEvent.findMany({
+            where: { type: 'cashback', createdAt: { gte: since } },
+            orderBy: { createdAt: 'desc' },
+            take: 5000,
+            include: {
+                User: { select: { id: true, name: true, phoneNumber: true } },
+                Campaign: { select: { id: true, title: true, startDate: true, endDate: true, cashbackAmount: true } },
+            },
+        });
+
+        const exceptions = [];
+        const reviewedLogs = await prisma.activityLog.findMany({
+            where: { action: 'COMPLIANCE_EXCEPTION_REVIEWED' },
+            select: { entityId: true },
+        });
+        const reviewedIds = new Set(reviewedLogs.map(l => l.entityId));
+
+        // Group by userId + window of 24h for high-frequency detection
+        const userWindows = {};
+        events.forEach(e => {
+            if (!e.userId) return;
+            if (!userWindows[e.userId]) userWindows[e.userId] = [];
+            userWindows[e.userId].push(e);
+        });
+
+        // Compute campaign average cashback
+        const campaignAmounts = {};
+        events.forEach(e => {
+            if (!e.campaignId) return;
+            if (!campaignAmounts[e.campaignId]) campaignAmounts[e.campaignId] = [];
+            campaignAmounts[e.campaignId].push(Number(e.amount || 0));
+        });
+        const campaignAvg = Object.fromEntries(
+            Object.entries(campaignAmounts).map(([id, amounts]) => [id, amounts.reduce((a, b) => a + b, 0) / amounts.length])
+        );
+
+        events.forEach(e => {
+            const userEvts = userWindows[e.userId] || [];
+            const windowStart = new Date(e.createdAt.getTime() - 24 * 60 * 60 * 1000);
+            const inWindow = userEvts.filter(ev => ev.createdAt >= windowStart && ev.createdAt <= e.createdAt);
+
+            // High frequency flag
+            if (inWindow.length > 5) {
+                const flagId = `hf-${e.userId}-${e.campaignId}`;
+                if (!exceptions.find(ex => ex.id === flagId)) {
+                    exceptions.push({
+                        id: flagId,
+                        userId: e.userId,
+                        userName: e.User?.name || 'Unknown',
+                        campaignId: e.campaignId,
+                        campaignTitle: e.Campaign?.title || '—',
+                        amount: e.amount,
+                        flagType: 'high_frequency',
+                        flagReason: `User redeemed ${inWindow.length} QRs within 24 hours (threshold: 5)`,
+                        createdAt: e.createdAt,
+                        reviewed: reviewedIds.has(flagId),
+                    });
+                }
+            }
+
+            // Date boundary flag
+            const camp = e.Campaign;
+            if (camp) {
+                const redeemTime = new Date(e.createdAt);
+                const campStart = new Date(camp.startDate);
+                const campEnd = new Date(camp.endDate);
+                if (redeemTime < campStart || redeemTime > campEnd) {
+                    const flagId = `db-${e.id}`;
+                    exceptions.push({
+                        id: flagId,
+                        userId: e.userId,
+                        userName: e.User?.name || 'Unknown',
+                        campaignId: e.campaignId,
+                        campaignTitle: camp.title,
+                        amount: e.amount,
+                        flagType: 'date_boundary',
+                        flagReason: `Redemption occurred outside campaign window (${camp.startDate?.toDateString()} – ${camp.endDate?.toDateString()})`,
+                        createdAt: e.createdAt,
+                        reviewed: reviewedIds.has(flagId),
+                    });
+                }
+            }
+
+            // Amount deviation flag
+            const avg = campaignAvg[e.campaignId];
+            if (avg && Number(e.amount) > avg * 2) {
+                const flagId = `ad-${e.id}`;
+                exceptions.push({
+                    id: flagId,
+                    userId: e.userId,
+                    userName: e.User?.name || 'Unknown',
+                    campaignId: e.campaignId,
+                    campaignTitle: e.Campaign?.title || '—',
+                    amount: e.amount,
+                    flagType: 'amount_deviation',
+                    flagReason: `Payout ₹${Number(e.amount).toFixed(2)} is >2× campaign average ₹${avg.toFixed(2)}`,
+                    createdAt: e.createdAt,
+                    reviewed: reviewedIds.has(flagId),
+                });
+            }
+        });
+
+        res.json({ exceptions, total: exceptions.length });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to generate exception report', error: error.message });
+    }
+};
+
+/**
+ * GET /api/admin/compliance/beneficiary-report
+ * Returns Table 2 data: per-redemption beneficiary detail.
+ */
+exports.getBeneficiaryReport = async (req, res) => {
+    try {
+        const { startDate, endDate, limit = '500', vendorId, campaignId, search } = req.query;
+        const take = Math.min(Number(limit) || 500, 1000);
+
+        // 1. Fetch redeemed QRCodes directly from QRCode table
+        const qrWhere = { status: 'redeemed' };
+        if (startDate || endDate) {
+            qrWhere.redeemedAt = {};
+            if (startDate) qrWhere.redeemedAt.gte = new Date(startDate);
+            if (endDate) qrWhere.redeemedAt.lte = new Date(endDate);
+        }
+        if (campaignId && campaignId !== 'all') {
+            qrWhere.campaignId = campaignId;
+        }
+        if (vendorId && vendorId !== 'all') {
+            qrWhere.OR = [
+                { vendorId: vendorId },
+                { Campaign: { Brand: { vendorId: vendorId } } }
+            ];
+        }
+
+        const redeemedQrs = await prisma.qRCode.findMany({
+            where: qrWhere,
+            take,
+            orderBy: { redeemedAt: 'desc' },
+            include: {
+                Campaign: {
+                    select: {
+                        id: true,
+                        title: true,
+                        cashbackAmount: true,
+                        startDate: true,
+                        endDate: true,
+                        Brand: {
+                            select: {
+                                id: true,
+                                name: true,
+                                vendorId: true,
+                                Vendor: {
+                                    select: {
+                                        id: true,
+                                        businessName: true,
+                                        contactPhone: true,
+                                        contactEmail: true,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        const qrIds = redeemedQrs.map(q => q.id).filter(Boolean);
+        const qrHashes = redeemedQrs.map(q => q.uniqueHash).filter(Boolean);
+
+        // 2. Fetch redemption events for geolocation and user link
+        const events = qrIds.length
+            ? await prisma.redemptionEvent.findMany({
+                where: { qrId: { in: qrIds } },
+                orderBy: { createdAt: 'desc' }
+            })
+            : [];
+
+        const eventByQrId = new Map();
+        events.forEach(e => {
+            if (e.qrId) {
+                const existing = eventByQrId.get(e.qrId);
+                // prioritize event with city or userId
+                if (!existing || (!existing.city && e.city) || (!existing.userId && e.userId)) {
+                    eventByQrId.set(e.qrId, e);
+                }
+            }
+        });
+
+        // 3. Collect all user IDs across QRs and Events
+        const allUserIds = Array.from(new Set([
+            ...redeemedQrs.map(q => q.redeemedByUserId).filter(Boolean),
+            ...events.map(e => e.userId).filter(Boolean)
+        ]));
+
+        // Fetch associated Transactions for these QRs to find users if not directly linked
+        const qrTransactions = qrIds.length
+            ? await prisma.transaction.findMany({
+                where: { qrId: { in: qrIds } },
+                include: {
+                    Wallet: {
+                        include: {
+                            User: {
+                                select: {
+                                    id: true,
+                                    name: true,
+                                    email: true,
+                                    phoneNumber: true,
+                                    username: true,
+                                    status: true,
+                                    avatarUrl: true,
+                                    createdAt: true,
+                                    PayoutMethods: {
+                                        orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }],
+                                        select: { id: true, value: true, type: true, isPrimary: true }
+                                    },
+                                    Wallet: {
+                                        select: { balance: true, currency: true }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+            : [];
+        const txUserByQrId = new Map();
+        qrTransactions.forEach(t => {
+            if (t.qrId && t.Wallet?.User) txUserByQrId.set(t.qrId, t.Wallet.User);
+        });
+
+        // Fetch associated Claims for these QR hashes to find users if not directly linked
+        const qrClaims = qrHashes.length
+            ? await prisma.claim.findMany({
+                where: { token: { in: qrHashes } },
+                include: {
+                    ClaimedByUser: {
+                        select: {
+                            id: true,
+                            name: true,
+                            email: true,
+                            phoneNumber: true,
+                            username: true,
+                            status: true,
+                            avatarUrl: true,
+                            createdAt: true,
+                            PayoutMethods: {
+                                orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }],
+                                select: { id: true, value: true, type: true, isPrimary: true }
+                            },
+                            Wallet: {
+                                select: { balance: true, currency: true }
+                            }
+                        }
+                    }
+                }
+            })
+            : [];
+        const claimUserByHash = new Map();
+        qrClaims.forEach(c => {
+            if (c.token && c.ClaimedByUser) claimUserByHash.set(c.token, c.ClaimedByUser);
+        });
+
+        // Fetch all user profiles
+        const users = allUserIds.length
+            ? await prisma.user.findMany({
+                where: { id: { in: allUserIds } },
+                select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    phoneNumber: true,
+                    username: true,
+                    status: true,
+                    avatarUrl: true,
+                    createdAt: true,
+                    PayoutMethods: {
+                        orderBy: [{ isPrimary: 'desc' }, { createdAt: 'desc' }],
+                        select: { id: true, value: true, type: true, isPrimary: true }
+                    },
+                    Wallet: {
+                        select: { balance: true, currency: true }
+                    }
+                }
+            })
+            : [];
+        const userMap = new Map(users.map(u => [u.id, u]));
+
+        // Build unified dynamic beneficiary records
+        const beneficiaryMap = new Map();
+
+        redeemedQrs.forEach(qr => {
+            const event = eventByQrId.get(qr.id);
+            const user = (qr.redeemedByUserId ? userMap.get(qr.redeemedByUserId) : null)
+                || (event?.userId ? userMap.get(event.userId) : null)
+                || txUserByQrId.get(qr.id)
+                || claimUserByHash.get(qr.uniqueHash)
+                || null;
+
+            const primaryPayout = user?.PayoutMethods?.find(p => p.isPrimary) || user?.PayoutMethods?.[0];
+            const upiPayout = user?.PayoutMethods?.find(p => p.type === 'upi');
+            const corporateName = qr.Campaign?.Brand?.name || qr.Campaign?.Brand?.Vendor?.businessName || '—';
+            const vendorIdVal = qr.vendorId || qr.Campaign?.Brand?.vendorId || qr.Campaign?.Brand?.Vendor?.id || null;
+            const key = qr.uniqueHash || qr.id;
+
+            beneficiaryMap.set(key, {
+                id: qr.id,
+                qrId: qr.id,
+                voucherNo: qr.uniqueHash || '—',
+                campaignId: qr.campaignId || qr.Campaign?.id || null,
+                campaignName: qr.Campaign?.title || '—',
+                vendorId: vendorIdVal,
+                vendorName: corporateName,
+                brandName: qr.Campaign?.Brand?.name || corporateName,
+                beneficiaryId: user?.id || qr.redeemedByUserId || null,
+                beneficiaryName: user?.name || user?.username || 'Verified User',
+                beneficiaryEmail: user?.email || '',
+                mobileNumber: user?.phoneNumber || primaryPayout?.value || '',
+                userStatus: user?.status || 'active',
+                userAvatar: user?.avatarUrl || null,
+                userJoinedAt: user?.createdAt || null,
+                walletBalance: user?.Wallet?.balance != null ? Number(user.Wallet.balance) : null,
+                payoutMethod: primaryPayout ? `${String(primaryPayout.type || '').toUpperCase()}: ${primaryPayout.value}` : '',
+                upiId: upiPayout?.value || (primaryPayout?.type === 'upi' ? primaryPayout.value : ''),
+                amount: Number(qr.cashbackAmount || qr.Campaign?.cashbackAmount || 0),
+                redemptionStatus: qr.status || 'redeemed',
+                city: event?.city || '',
+                state: event?.state || '',
+                pincode: event?.pincode || '',
+                lat: event?.lat != null ? Number(event.lat) : null,
+                lng: event?.lng != null ? Number(event.lng) : null,
+                createdAt: qr.redeemedAt || event?.createdAt || qr.updatedAt || qr.createdAt,
+                capturedAt: event?.capturedAt || qr.redeemedAt || qr.updatedAt || qr.createdAt,
+            });
+        });
+
+        let beneficiaries = Array.from(beneficiaryMap.values());
+
+        // Apply in-memory search if specified
+        if (search && search.trim()) {
+            const s = search.trim().toLowerCase();
+            beneficiaries = beneficiaries.filter(b =>
+                [b.beneficiaryName, b.beneficiaryEmail, b.mobileNumber, b.voucherNo, b.upiId, b.campaignName, b.vendorName, b.city, b.state]
+                    .some(v => String(v || '').toLowerCase().includes(s))
+            );
+        }
+
+        beneficiaries.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+        res.json({ beneficiaries, total: beneficiaries.length });
+    } catch (error) {
+        console.error('[getBeneficiaryReport ERROR]:', error);
+        res.status(500).json({ message: 'Failed to fetch beneficiary report', error: error.message });
+    }
+};
+
+/**
+ * PUT /api/admin/compliance/exceptions/:id/review
+ * Marks a compliance exception flag as reviewed via ActivityLog.
+ */
+exports.reviewException = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!id) return res.status(400).json({ message: 'Exception ID required' });
+
+        await prisma.activityLog.create({
+            data: {
+                action: 'COMPLIANCE_EXCEPTION_REVIEWED',
+                entityType: 'compliance_exception',
+                entityId: id,
+                actorRole: 'admin',
+                userId: req.user?.id || null,
+                details: `Exception ${id} marked as reviewed by admin`,
+            }
+        });
+
+        res.json({ message: 'Exception marked as reviewed', id });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to review exception', error: error.message });
+    }
+};
 
 exports.processWithdrawal = async (req, res) => {
     try {

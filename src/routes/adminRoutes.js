@@ -15,7 +15,9 @@ const {
     getAllSupportTickets, replySupportTicket, sendNotification, getNotifications,
     getAllOrders, updateOrderStatus, updateTransactionStatus,
     deleteCampaign, deleteUser,
-    getSystemSettings, updateSystemSettings, getActivityLogs, getFinanceSummary
+    getSystemSettings, updateSystemSettings, getActivityLogs, getFinanceSummary,
+    getCampaignComplianceSummary, getPayoutCampaignMapping, getExceptionReport,
+    getBeneficiaryReport, reviewException,
 } = require('../controllers/adminController');
 
 const {
@@ -114,5 +116,11 @@ router.put('/settings', updateSystemSettings);
 // C9: Activity Logs (Audit)
 router.get('/activity-logs', getActivityLogs);
 
-module.exports = router;
+// C10: Compliance & Audit
+router.get('/compliance/campaign-summary', getCampaignComplianceSummary);
+router.get('/compliance/payout-mapping', getPayoutCampaignMapping);
+router.get('/compliance/exceptions', getExceptionReport);
+router.get('/compliance/beneficiary-report', getBeneficiaryReport);
+router.put('/compliance/exceptions/:id/review', reviewException);
 
+module.exports = router;
