@@ -24,6 +24,7 @@ router.get('/payout-methods', protect, getPayoutMethods);
 router.post('/payout-methods', protect, addPayoutMethod);
 router.delete('/payout-methods/:id', protect, deletePayoutMethod);
 router.get('/withdrawals', protect, getWithdrawalHistory);
+router.post('/withdrawals', protect, require('../controllers/walletController').requestPayout);
 
 router.get('/redemptions', protect, getRedemptionHistory);
 router.get('/transactions', protect, getTransactionHistory);

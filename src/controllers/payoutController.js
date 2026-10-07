@@ -19,96 +19,74 @@ exports.processPayout = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Withdrawal not found' });
         }
 
-        if (withdrawal.status !== 'pending' && withdrawal.status !== 'processing') {
+        if (!['completed', 'failed'].includes(status)) {
+            return res.status(400).json({ success: false, message: 'Invalid status. Use completed or failed.' });
+        }
+
+        if (withdrawal.status === 'processing') {
+            return res.status(400).json({
+                success: false,
+                message: 'Payout is being processed by the bank; use requery'
+            });
+        }
+
+        if (!['pending', 'on_hold'].includes(withdrawal.status)) {
             return res.status(400).json({
                 success: false,
                 message: 'Withdrawal already processed'
             });
         }
 
-        const result = await prisma.$transaction(async (tx) => {
-            // Update withdrawal status
-            const updatedWithdrawal = await tx.withdrawal.update({
-                where: { id: withdrawalId },
-                data: {
-                    status,
-                    referenceId,
-                    adminNote,
-                    rejectionReason,
-                    updatedAt: new Date()
-                }
-            });
-
-            const wallet = withdrawal.Wallet;
-            const amount = parseFloat(withdrawal.amount);
-
-            const decryptedValue = decrypt(withdrawal.PayoutMethod.value);
-
-            if (status === 'completed') {
-                // Unlock balance (it was already deducted from 'balance' during request)
-                await tx.wallet.update({
-                    where: { id: wallet.id },
-                    data: {
-                        lockedBalance: { decrement: amount }
-                    }
-                });
-
-                // Create transaction record
-                await tx.transaction.create({
-                    data: {
-                        walletId: wallet.id,
-                        type: 'debit',
-                        amount: amount,
-                        category: 'withdrawal',
-                        status: 'success',
-                        description: `UPI Payout to ${decryptedValue}`,
-                        referenceId: referenceId || withdrawal.id
-                    }
-                });
-
-                // Notify user
-                await tx.notification.create({
-                    data: {
-                        userId: wallet.userId,
-                        title: 'Payout Successful',
-                        message: `₹${amount} has been sent to your UPI: ${decryptedValue}`,
-                        type: 'payout-success',
-                        metadata: {
-                            withdrawalId: withdrawal.id,
-                            amount: amount,
-                            upi: decryptedValue
-                        }
-                    }
-                });
-
-            } else if (status === 'failed') {
-                // Return money to balance and unlock
-                await tx.wallet.update({
-                    where: { id: wallet.id },
-                    data: {
-                        balance: { increment: amount },
-                        lockedBalance: { decrement: amount }
-                    }
-                });
-
-                // Notify user
-                await tx.notification.create({
-                    data: {
-                        userId: wallet.userId,
-                        title: 'Payout Failed',
-                        message: `Payout of ₹${amount} failed. ${rejectionReason || 'Please try again or contact support.'}`,
-                        type: 'payout-failed',
-                        metadata: {
-                            withdrawalId: withdrawal.id,
-                            amount: amount,
-                            reason: rejectionReason
-                        }
-                    }
-                });
-            }
-
-            return updatedWithdrawal;
+        // Wallet movement (success: balance & lockedBalance -= amount;
+        // failure: lockedBalance -= amount) is applied idempotently by the service.
+        const rblPayoutService = require('../services/rblPayoutService');
+        const result = await rblPayoutService.finalizeManually(withdrawalId, status, {
+            referenceId,
+            adminNote,
+            reason: rejectionReason
         });
+
+        const wallet = withdrawal.Wallet;
+        const amount = parseFloat(withdrawal.amount);
+        let decryptedValue;
+        try { decryptedValue = decrypt(withdrawal.PayoutMethod.value); } catch (e) { decryptedValue = 'your UPI'; }
+
+        // Notify user (best-effort; wallet is already finalized)
+        if (wallet.userId) {
+            try {
+                if (status === 'completed') {
+                    await prisma.notification.create({
+                        data: {
+                            userId: wallet.userId,
+                            title: 'Payout Successful',
+                            message: `₹${amount} has been sent to your UPI: ${decryptedValue}`,
+                            type: 'payout-success',
+                            metadata: {
+                                withdrawalId: withdrawal.id,
+                                amount: amount,
+                                upi: decryptedValue
+                            }
+                        }
+                    });
+                } else {
+                    await prisma.notification.create({
+                        data: {
+                            userId: wallet.userId,
+                            title: 'Payout Failed',
+                            message: `Payout of ₹${amount} failed. ${rejectionReason || 'Please try again or contact support.'}`,
+                            type: 'payout-failed',
+                            metadata: {
+                                withdrawalId: withdrawal.id,
+                                amount: amount,
+                                reason: rejectionReason
+                            }
+                        }
+                    });
+                }
+            } catch (notifyError) {
+                console.error('Payout notification error:', notifyError.message);
+            }
+        }
 
         safeLogActivity({
             actorUserId: req.user?.id,
@@ -128,15 +106,15 @@ exports.processPayout = async (req, res) => {
             success: true,
             message: `Payout ${status} successfully`,
             withdrawal: {
-                id: result.id,
-                status: result.status,
-                amount: parseFloat(result.amount)
+                id: result?.id || withdrawalId,
+                status: result?.status || status,
+                amount: parseFloat(result?.amount ?? withdrawal.amount)
             }
         });
 
     } catch (error) {
         console.error('Process payout error:', error);
-        res.status(500).json({
+        res.status(error.statusCode || 500).json({
             success: false,
             message: 'Failed to process payout',
             error: error.message
@@ -339,7 +317,7 @@ exports.deleteUPIMethod = async (req, res) => {
         const pendingWithdrawals = await prisma.withdrawal.count({
             where: {
                 payoutMethodId: id,
-                status: { in: ['pending', 'processing'] }
+                status: { in: ['pending', 'processing', 'on_hold'] }
             }
         });
 

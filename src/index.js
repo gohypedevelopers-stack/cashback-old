@@ -19,6 +19,7 @@ const whatsappWebhookRoutes = require('./routes/whatsappWebhookRoutes');
 const path = require('path');
 
 const { startBulkExportWorker } = require('./services/bulkQrExportService');
+const { startRblPayoutWorker } = require('./services/rblPayoutService');
 
 const app = express();
 
@@ -126,6 +127,7 @@ const startServer = async () => {
         await prisma.$connect();
         console.log('Database Connected Successfully');
         startBulkExportWorker();
+        startRblPayoutWorker();
 
         const PORT = process.env.PORT || 5000;
         app.listen(PORT, () => {

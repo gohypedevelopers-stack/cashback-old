@@ -402,15 +402,53 @@ model Withdrawal {
   id              String       @id @default(uuid())
   walletId        String
   amount          Decimal      @db.Decimal(12, 2)
+  // pending | processing | on_hold | completed | failed
   status          String       @default("pending")
   payoutMethodId  String
   referenceId     String?
   adminNote       String?
   rejectionReason String?
+  // RBL UPI disbursement tracking (see src/services/rblPayoutService.js)
+  rblTxnId        String?      @unique
+  rblRefId        String?      @unique
+  rblOrgTxnId     String?
+  rblCustRef      String?
+  rblTxnStatus    String?
+  rblErrorCode    String?
+  rblPayeeRespCode String?
+  holdReason      String?
+  requeryCount    Int          @default(0)
+  notFoundCount   Int          @default(0)
+  retriedSameIds  Boolean      @default(false)
+  initiatedAt     DateTime?
+  lastRequeryAt   DateTime?
+  nextRequeryAt   DateTime?
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
   PayoutMethod    PayoutMethod @relation(fields: [payoutMethodId], references: [id])
   Wallet          Wallet       @relation(fields: [walletId], references: [id])
+  RblApiLogs      RblApiLog[]
+
+  @@index([status, nextRequeryAt])
+}
+
+// Every request/response exchanged with the RBL UPI APIs (kept for audit and reconciliation).
+model RblApiLog {
+  id           String      @id @default(uuid())
+  withdrawalId String?
+  api          String
+  txnId        String?
+  requestBody  String
+  responseBody String?
+  httpStatus   Int?
+  error        String?
+  durationMs   Int?
+  createdAt    DateTime    @default(now())
+  Withdrawal   Withdrawal? @relation(fields: [withdrawalId], references: [id])
+
+  @@index([withdrawalId])
+  @@index([txnId])
+  @@index([createdAt])
 }
 
 model SupportTicket {

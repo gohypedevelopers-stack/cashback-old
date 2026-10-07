@@ -49,3 +49,10 @@ Thumbs.db
 /src/generated/prisma
 .vercel
 generated-exports/
+
+# RBL secrets and local test tools that contain credentials
+*.pfx
+*.postman_collection.json
+generate_disbursement_structure.js
+generate_perfect_structure.js
+generate_test_cases.js

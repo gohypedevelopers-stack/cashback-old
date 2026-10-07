@@ -11,7 +11,7 @@ const {
     verifyVendor, creditWallet, adjustWalletBalance, updateCampaignStatus, getVendorDetails,
     getVendorOverview, updateVendorDetails, updateVendorCredentials, getVendorCredentialRequests,
     approveCredentialRequest, rejectCredentialRequest, getBrandOverview, updateBrandDetails,
-    getPendingWithdrawals, processWithdrawal,
+    getPendingWithdrawals, processWithdrawal, requeryWithdrawal,
     getAllSupportTickets, replySupportTicket, sendNotification, getNotifications,
     getAllOrders, updateOrderStatus, updateTransactionStatus,
     deleteCampaign, deleteUser,
@@ -97,6 +97,7 @@ router.get('/qrs', getAllQRs); // Added missing QR route
 // Payout Management
 router.get('/withdrawals', getPendingWithdrawals);
 router.put('/withdrawals/:id/process', processWithdrawal);
+router.post('/withdrawals/:id/requery', requeryWithdrawal);
 
 // Support & Notifications
 router.get('/support', getAllSupportTickets);

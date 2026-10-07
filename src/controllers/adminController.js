@@ -1397,95 +1397,67 @@ exports.reviewException = async (req, res) => {
 exports.processWithdrawal = async (req, res) => {
     try {
         const { id } = req.params;
-        const { status, referenceId, adminNote, reason } = req.body; // status: 'processed' or 'rejected'
+        const { status, referenceId, adminNote, reason, processViaRBL } = req.body;
 
         if (!['completed', 'failed'].includes(status)) {
             return res.status(400).json({ message: 'Invalid status. Use completed or failed.' });
         }
 
-        const result = await prisma.$transaction(async (tx) => {
-            const withdrawal = await tx.withdrawal.findUnique({ where: { id } });
-            if (!withdrawal) throw new Error('Withdrawal request not found');
-            if (withdrawal.status !== 'pending') throw new Error('Request already handled');
+        const withdrawalPreCheck = await prisma.withdrawal.findUnique({
+            where: { id },
+            include: { Wallet: { include: { Vendor: true, User: true } } }
+        });
 
-            // Update Withdrawal
-            const updatedWithdrawal = await tx.withdrawal.update({
-                where: { id },
-                data: {
-                    status,
-                    referenceId,
-                    adminNote,
-                    rejectionReason: status === 'failed' ? reason : null
-                }
+        if (!withdrawalPreCheck) return res.status(404).json({ message: 'Withdrawal not found' });
+        if (withdrawalPreCheck.status === 'processing') {
+            return res.status(400).json({ message: 'Payout is being processed by the bank; use requery' });
+        }
+        if (!['pending', 'on_hold'].includes(withdrawalPreCheck.status)) {
+            return res.status(400).json({ message: 'Request already handled' });
+        }
+
+        const rblPayoutService = require('../services/rblPayoutService');
+        const vendorId = withdrawalPreCheck.Wallet?.Vendor?.id;
+
+        // Send to RBL: final status is decided later by the status-enquiry worker
+        if (status === 'completed' && processViaRBL) {
+            if (withdrawalPreCheck.status !== 'pending') {
+                return res.status(400).json({ message: 'Only pending withdrawals can be sent to RBL' });
+            }
+
+            const withdrawal = await rblPayoutService.initiatePayout(id);
+
+            safeLogActivity({
+                actorUserId: req.user?.id,
+                actorRole: req.user?.role,
+                vendorId,
+                action: 'withdrawal_rbl_initiated',
+                entityType: 'withdrawal',
+                entityId: id,
+                metadata: {
+                    status: withdrawal?.status,
+                    rblTxnId: withdrawal?.rblTxnId || null,
+                    reason: withdrawal?.rejectionReason || withdrawal?.holdReason || adminNote || null
+                },
+                req
             });
 
-            const numericAmount = Number(withdrawal.amount);
-            
-            // Get current wallet state
-            const wallet = await tx.wallet.findUnique({ where: { id: withdrawal.walletId } });
-            if (!wallet) throw new Error('Wallet not found');
+            return res.json({ message: 'Payout sent to RBL', withdrawal });
+        }
 
-            const currentLocked = Number(wallet.lockedBalance);
-            console.log(`[AdminProcess] ID: ${id}, Amount: ${numericAmount}, Wallet: ${wallet.id}, CurrentLocked: ${currentLocked}`);
-
-            if (status === 'failed') {
-                // Return money to balance and unlock
-                await tx.wallet.update({
-                    where: { id: wallet.id },
-                    data: {
-                        balance: { increment: numericAmount },
-                        lockedBalance: Math.max(0, currentLocked - numericAmount)
-                    }
-                });
-            } else if (status === 'completed') {
-                // Just unlock
-                await tx.wallet.update({
-                    where: { id: wallet.id },
-                    data: {
-                        lockedBalance: Math.max(0, currentLocked - numericAmount)
-                    }
-                });
-
-                // Create transaction record for audit
-                await tx.transaction.create({
-                    data: {
-                        walletId: wallet.id,
-                        type: 'debit',
-                        amount: numericAmount,
-                        category: 'withdrawal',
-                        status: 'success',
-                        description: 'Withdrawal completed',
-                        referenceId: referenceId || id
-                    }
-                });
-            }
-            console.log(`[AdminProcess] Wallet ${wallet.id} updated successfully.`);
-
-            return updatedWithdrawal;
-        });
-
-        const enrichedWithdrawal = await prisma.withdrawal.findUnique({
-            where: { id: result.id },
-            include: {
-                Wallet: {
-                    include: {
-                        Vendor: true,
-                        User: true
-                    }
-                }
-            }
-        });
+        // Manual decision: wallet movement handled (idempotently) by the service
+        const result = await rblPayoutService.finalizeManually(id, status, { referenceId, adminNote, reason });
 
         safeLogActivity({
             actorUserId: req.user?.id,
             actorRole: req.user?.role,
-            vendorId: enrichedWithdrawal?.Wallet?.Vendor?.id,
+            vendorId,
             action: 'withdrawal_update',
             entityType: 'withdrawal',
-            entityId: result.id,
+            entityId: id,
             metadata: {
                 status,
-                referenceId,
+                referenceId: referenceId || null,
                 reason: reason || adminNote || null
             },
             req
@@ -1494,12 +1466,40 @@ exports.processWithdrawal = async (req, res) => {
         res.json({ message: `Withdrawal ${status}`, result });
 
     } catch (error) {
-        res.status(500).json({ message: 'Processing failed', error: error.message });
+        const code = error.statusCode || 500;
+        res.status(code).json({ message: code === 500 ? 'Processing failed' : error.message, error: error.message });
     }
 };
 
-// --- System Analytics ---
+exports.requeryWithdrawal = async (req, res) => {
+    try {
+        const { id } = req.params;
 
+        const existing = await prisma.withdrawal.findUnique({ where: { id }, select: { id: true } });
+        if (!existing) return res.status(404).json({ message: 'Withdrawal not found' });
+
+        const rblPayoutService = require('../services/rblPayoutService');
+        const withdrawal = await rblPayoutService.processRequery(id);
+
+        safeLogActivity({
+            actorUserId: req.user?.id,
+            actorRole: req.user?.role,
+            action: 'withdrawal_requery',
+            entityType: 'withdrawal',
+            entityId: id,
+            metadata: {
+                status: withdrawal?.status,
+                rblTxnStatus: withdrawal?.rblTxnStatus || null
+            },
+            req
+        });
+
+        res.json({ message: `Withdrawal status: ${withdrawal?.status}`, withdrawal });
+    } catch (error) {
+        const code = error.statusCode || 500;
+        res.status(code).json({ message: code === 500 ? 'Requery failed' : error.message, error: error.message });
+    }
+};
 exports.getSystemStats = async (req, res) => {
     try {
         const [
@@ -1612,7 +1612,7 @@ exports.getFinanceSummary = async (req, res) => {
                 _count: { _all: true }
             }),
             prisma.withdrawal.aggregate({
-                where: { status: 'pending' },
+                where: { status: { in: ['pending', 'processing', 'on_hold'] } },
                 _sum: { amount: true },
                 _count: { _all: true }
             }),
@@ -2411,7 +2411,7 @@ exports.getVendorDetails = async (req, res) => {
 exports.getPendingWithdrawals = async (req, res) => {
     try {
         const withdrawals = await prisma.withdrawal.findMany({
-            where: { status: 'pending' },
+            where: { status: { in: ['pending', 'on_hold', 'processing'] } },
             include: {
                 PayoutMethod: true,
                 Wallet: {

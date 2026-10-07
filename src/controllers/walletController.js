@@ -188,7 +188,7 @@ exports.getTransactionHistory = async (req, res) => {
 exports.requestPayout = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { amount, payoutMethodId } = req.body;
+        const { amount, payoutMethodId, upiId } = req.body;
 
         // Configuration
         const MIN_PAYOUT_AMOUNT = 10;
@@ -196,14 +196,11 @@ exports.requestPayout = async (req, res) => {
 
         // Validate amount
         if (!amount || parseFloat(amount) < MIN_PAYOUT_AMOUNT) {
-            return res.status(400).json({
-                success: false,
-                message: `Minimum payout amount is ₹${MIN_PAYOUT_AMOUNT}`
-            });
+            return res.status(400).json({ success: false, message: `Minimum payout amount is ₹${MIN_PAYOUT_AMOUNT}` });
         }
 
         // Get wallet
-        const wallet = await prisma.wallet.findUnique({ where: { userId } });
+        const wallet = await prisma.wallet.findUnique({ where: { userId }, include: { User: true } });
         if (!wallet) {
             return res.status(404).json({ success: false, message: 'Wallet not found' });
         }
@@ -212,10 +209,7 @@ exports.requestPayout = async (req, res) => {
 
         // Check balance
         if (parseFloat(amount) > availableBalance) {
-            return res.status(400).json({
-                success: false,
-                message: 'Insufficient balance'
-            });
+            return res.status(400).json({ success: false, message: 'Insufficient balance' });
         }
 
         // Check daily limit
@@ -225,7 +219,7 @@ exports.requestPayout = async (req, res) => {
             where: {
                 walletId: wallet.id,
                 createdAt: { gte: today },
-                status: { in: ['pending', 'processing', 'completed'] }
+                status: { in: ['pending', 'processing', 'on_hold', 'completed'] }
             },
             _sum: { amount: true }
         });
@@ -238,70 +232,120 @@ exports.requestPayout = async (req, res) => {
             });
         }
 
-        // Verify payout method
-        const payoutMethod = await prisma.payoutMethod.findUnique({
-            where: { id: payoutMethodId }
-        });
-
-        if (!payoutMethod || payoutMethod.userId !== userId) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid payout method'
+        // Verify or Create payout method
+        let finalPayoutMethodId = payoutMethodId;
+        
+        if (!finalPayoutMethodId && upiId) {
+            const { encrypt, decrypt } = require('../utils/encryption');
+            const normalizedUpi = String(upiId).trim().toLowerCase();
+            
+            // Check if user already has this UPI saved
+            const existingMethods = await prisma.payoutMethod.findMany({
+                where: { userId, type: 'upi' }
             });
+            
+            const match = existingMethods.find(m => {
+                try { return decrypt(m.value) === normalizedUpi; } catch(e) { return m.value === normalizedUpi; }
+            });
+            
+            if (match) {
+                finalPayoutMethodId = match.id;
+            } else {
+                // Create it
+                const newMethod = await prisma.payoutMethod.create({
+                    data: {
+                        userId,
+                        type: 'upi',
+                        value: encrypt(normalizedUpi),
+                        details: { upiId: normalizedUpi },
+                        isPrimary: existingMethods.length === 0
+                    }
+                });
+                finalPayoutMethodId = newMethod.id;
+            }
         }
 
-        // Create withdrawal request and lock balance
-        const result = await prisma.$transaction(async (tx) => {
-            // Lock balance
+        if (!finalPayoutMethodId) {
+            return res.status(400).json({ success: false, message: 'Please provide upiId or payoutMethodId' });
+        }
+
+        const payoutMethod = await prisma.payoutMethod.findUnique({
+            where: { id: finalPayoutMethodId }
+        });
+
+        if (!payoutMethod || payoutMethod.userId !== userId || payoutMethod.type !== 'upi') {
+            return res.status(400).json({ success: false, message: 'Invalid or unsupported payout method (UPI required)' });
+        }
+
+        // 1. Create withdrawal request and lock balance FIRST
+        const withdrawal = await prisma.$transaction(async (tx) => {
             await tx.wallet.update({
                 where: { id: wallet.id },
                 data: { lockedBalance: { increment: parseFloat(amount) } }
             });
 
-            // Create withdrawal request
-            const withdrawal = await tx.withdrawal.create({
+            return await tx.withdrawal.create({
                 data: {
                     walletId: wallet.id,
                     amount: parseFloat(amount),
                     status: 'pending',
-                    payoutMethodId: payoutMethodId
+                    payoutMethodId: finalPayoutMethodId
                 },
                 include: { PayoutMethod: true }
             });
-
-            return withdrawal;
         });
 
-        res.json({
-            success: true,
-            message: 'Payout request created successfully',
+        console.log(`[PAYOUT] Withdrawal ${withdrawal.id} created (pending). Initiating RBL payout.`);
+
+        // 2. Hand off to the RBL payout service. Final success/failure is
+        //    determined by the status-enquiry worker; wallet movements are
+        //    applied there. NEVER refund here on an exception/timeout - the
+        //    bank may still pay out.
+        const rblPayoutService = require('../services/rblPayoutService');
+        let result;
+        try {
+            result = await rblPayoutService.initiatePayout(withdrawal.id);
+        } catch (initError) {
+            console.error(`[PAYOUT] initiatePayout error for withdrawal ${withdrawal.id} (left for reconciliation):`, initError.message);
+            result = await prisma.withdrawal.findUnique({ where: { id: withdrawal.id } }).catch(() => null);
+        }
+
+        const finalStatus = (result && result.status) || 'pending';
+        let message;
+        switch (finalStatus) {
+            case 'completed':
+                message = 'Payout processed to your bank account!';
+                break;
+            case 'on_hold':
+                message = 'Payout is under review and will be updated soon.';
+                break;
+            case 'failed':
+                message = `Payout failed: ${(result && result.rejectionReason) || 'please try again'}`;
+                break;
+            case 'processing':
+                message = 'Payout initiated. It will be credited to your UPI shortly.';
+                break;
+            default:
+                message = 'Payout request received and is being processed.';
+        }
+
+        res.status(finalStatus === 'failed' ? 400 : 200).json({
+            success: finalStatus !== 'failed',
+            message,
             withdrawal: {
-                id: result.id,
-                amount: parseFloat(result.amount),
-                status: result.status,
-                payoutMethod: result.PayoutMethod.value,
-                createdAt: result.createdAt
+                id: withdrawal.id,
+                amount: parseFloat(amount),
+                status: finalStatus,
+                payoutMethod: withdrawal.PayoutMethod.value,
+                createdAt: withdrawal.createdAt
             }
-        });
-
-        console.log('[PAYOUT] initiated (wallet)', {
-            userId,
-            amount: parseFloat(amount),
-            payoutMethodId,
-            withdrawalId: result.id
         });
 
     } catch (error) {
         console.error('Request payout error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to create payout request',
-            error: error.message
-        });
+        res.status(500).json({ success: false, message: 'Failed to request payout', error: error.message });
     }
 };
-
-// Get Payout Status (Screen 11)
 exports.getPayoutStatus = async (req, res) => {
     try {
         const userId = req.user.id;
