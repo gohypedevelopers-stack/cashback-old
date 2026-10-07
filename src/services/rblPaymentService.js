@@ -94,10 +94,13 @@ class RblPaymentService {
         if (this.certPath && fs.existsSync(this.certPath)) {
             this.httpsAgent = new https.Agent({
                 pfx: fs.readFileSync(this.certPath),
-                passphrase: this.certPassphrase
+                passphrase: this.certPassphrase,
+                // RBL whitelists our IPv4 address; its Akamai host also resolves to IPv6, so pin IPv4.
+                family: Number(process.env.RBL_IP_FAMILY || 4)
             });
         } else {
-            this.httpsAgent = new https.Agent({ rejectUnauthorized: false });
+            console.warn(`RBL client certificate not found at RBL_CERT_PATH=${this.certPath || '(unset)'} - RBL will reject calls (HTTP 403)`);
+            this.httpsAgent = new https.Agent({ rejectUnauthorized: false, family: Number(process.env.RBL_IP_FAMILY || 4) });
         }
 
         // In-memory session cache
