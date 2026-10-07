@@ -72,6 +72,9 @@ function isSessionError(body) {
     return /session\s+has\s+been\s+expired|session[^<]{0,40}invalid|please\s+relogin/i.test(body);
 }
 
+// Calendar day in India Standard Time (UTC+5:30), e.g. '2026-10-07'.
+const istDay = () => new Date(Date.now() + 330 * 60 * 1000).toISOString().slice(0, 10);
+
 class RblPaymentService {
     constructor() {
         this.baseURL = process.env.RBL_BASE_URL || 'https://apideveloper.rbl.bank.in/test/sb/rbl/api/v1/upi';
@@ -131,7 +134,8 @@ class RblPaymentService {
             httpsAgent: this.httpsAgent,
             responseType: 'text', // Force axios to not parse JSON automatically
             transformResponse: [(data) => data], // Keep the raw body as-is
-            timeout: Number(process.env.RBL_TIMEOUT_MS || 30000),
+            // RBL guideline: Payment and Re-Query APIs answer in 2-30 s; keep the client timeout at 60 s.
+            timeout: Number(process.env.RBL_TIMEOUT_MS || 60000),
             maxRedirects: 0, // RBL 302 -> /Error.html must surface, not be followed
             validateStatus: () => true // Never throw on HTTP status; we classify ourselves
         };
@@ -262,6 +266,10 @@ class RblPaymentService {
             this.sessionToken = null;
             this.sessionObtainedAt = null;
         }
+        // RBL session tokens expire at 12:00 am (IST) of the calendar day they were created on.
+        if (this.sessionToken && this.sessionDay !== istDay()) {
+            this.sessionToken = null;
+        }
         if (this.sessionToken) return this.sessionToken;
 
         if (!this._loginPromise) {
@@ -270,6 +278,7 @@ class RblPaymentService {
                     const token = await this._login();
                     this.sessionToken = token;
                     this.sessionObtainedAt = Date.now();
+                    this.sessionDay = istDay();
                     return token;
                 } finally {
                     this._loginPromise = null;

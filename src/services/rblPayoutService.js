@@ -40,8 +40,12 @@ const envNumber = (name, fallback) => {
 };
 
 const firstStatusCheckMs = () => envNumber('RBL_FIRST_STATUS_CHECK_SEC', 20) * 1000;
-const requeryIntervalMs = () => envNumber('RBL_REQUERY_INTERVAL_MIN', 20) * 60 * 1000;
-const notFoundRetryMs = () => envNumber('RBL_NOT_FOUND_RETRY_SEC', 60) * 1000;
+// RBL guidelines: pending (IN PROGRESS) -> checks at ~30 s and ~60 s, then every 3 hours.
+// Timeout / HTTP error -> checks at ~30 s and ~60 s; if still 'not found', a 3rd check after 20 min,
+// then re-attempt with the same TxnID/RefID.
+const shortRecheckMs = () => envNumber('RBL_SHORT_RECHECK_SEC', 30) * 1000;
+const inProgressIntervalMs = () => envNumber('RBL_IN_PROGRESS_INTERVAL_MIN', 180) * 60 * 1000;
+const notFoundThirdCheckMs = () => envNumber('RBL_NOT_FOUND_THIRD_CHECK_MIN', 20) * 60 * 1000;
 const maxRequeryDays = () => envNumber('RBL_MAX_REQUERY_DAYS', 7);
 const reconHour = () => envNumber('RBL_RECON_HOUR', 2);
 const maxTxnAmount = () => envNumber('RBL_MAX_TXN_AMOUNT', null);
@@ -556,7 +560,7 @@ const processRequery = async (withdrawalId) => {
             return updateWithdrawal(withdrawalId, {
                 ...enquiryFields,
                 notFoundCount,
-                nextRequeryAt: new Date(now.getTime() + notFoundRetryMs())
+                nextRequeryAt: new Date(now.getTime() + (notFoundCount === 1 ? shortRecheckMs() : notFoundThirdCheckMs()))
             });
         }
 
@@ -587,7 +591,7 @@ const processRequery = async (withdrawalId) => {
         ...enquiryFields,
         // The bank has a record after all, so it must never be failed on a later "not found".
         ...(stillRejectedMarker ? { holdReason: `Bank returned "${withdrawal.rblErrorCode}" but logged the transaction as ${txnStatus}` } : {}),
-        nextRequeryAt: new Date(now.getTime() + requeryIntervalMs())
+        nextRequeryAt: new Date(now.getTime() + ((withdrawal.requeryCount || 0) < 1 ? shortRecheckMs() : inProgressIntervalMs()))
     });
 };
 
