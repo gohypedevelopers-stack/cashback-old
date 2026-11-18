@@ -16,6 +16,7 @@ const claimRoutes = require('./routes/claimRoutes');
 const iciciRoutes = require('./routes/iciciRoutes');
 const healthRoutes = require('./routes/healthRoutes');
 const whatsappWebhookRoutes = require('./routes/whatsappWebhookRoutes');
+const rblWebhookRoutes = require('./routes/rblWebhookRoutes');
 const path = require('path');
 
 const { startBulkExportWorker } = require('./services/bulkQrExportService');
@@ -104,6 +105,7 @@ app.use('/api/claim', claimRoutes); // Claim QR routes
 app.use('/api/icici', iciciRoutes); // ICICI Payment Callback
 app.use('/api/health', healthRoutes); // Health Check Endpoint
 app.use('/api/webhooks/whatsapp', whatsappWebhookRoutes); // WhatsApp Webhook Endpoint
+app.use('/api/webhooks/rbl', rblWebhookRoutes); // RBL UPI payout alerts
 
 
 // Error Handling Middleware

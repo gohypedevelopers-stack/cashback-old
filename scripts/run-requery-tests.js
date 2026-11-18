@@ -18,6 +18,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const zlib = require('zlib');
 
 // Credentials come from .env (same variables as src/services/rblPaymentService.js).
 const BASE = new URL(`${process.env.RBL_BASE_URL || 'https://apideveloper.rbl.bank.in/test/sb/rbl/api/v1/upi'}/payment`);
@@ -67,21 +68,27 @@ const compact = (body) => (body || '').replace(/<\?xml[^>]*>/, '').replace(/\s+/
 // Sends XML. Resolves {code, body} or {error}. With responseTimeoutMs, resolves {timedOut, late}
 // once that time passes; `late` resolves later with what the bank actually answered.
 function post(xml, { host = HOST, connectTimeoutMs = 90000, responseTimeoutMs } = {}) {
+  const sentAt = now();
   const full = new Promise((resolve) => {
     const req = https.request(
       { host, path: PATH, method: 'POST', agent: host === HOST ? agent : undefined, headers: { ...HEADERS, 'Content-Length': Buffer.byteLength(xml) } },
       (res) => {
-        let body = '';
-        res.on('data', (d) => (body += d));
-        res.on('end', () => resolve({ code: res.statusCode, body }));
+        const chunks = [];
+        res.on('data', (d) => chunks.push(d));
+        res.on('end', () => {
+          let buf = Buffer.concat(chunks);
+          // RBL error pages (e.g. HTTP 302) come gzip-compressed.
+          try { if (res.headers['content-encoding'] === 'gzip') buf = zlib.gunzipSync(buf); } catch (e) { /* keep raw */ }
+          resolve({ code: res.statusCode, body: buf.toString('utf8'), location: res.headers.location, requestXml: xml, sentAt });
+        });
       }
     );
     req.setTimeout(connectTimeoutMs, () => req.destroy(new Error(`ETIMEDOUT (no response within ${connectTimeoutMs / 1000}s)`)));
-    req.on('error', (e) => resolve({ error: e.message }));
+    req.on('error', (e) => resolve({ error: e.message, requestXml: xml, sentAt }));
     req.end(xml);
   });
   if (!responseTimeoutMs) return full;
-  return Promise.race([full, sleep(responseTimeoutMs).then(() => ({ timedOut: true, late: full }))]);
+  return Promise.race([full, sleep(responseTimeoutMs).then(() => ({ timedOut: true, late: full, requestXml: xml, sentAt }))]);
 }
 
 let session = '';
@@ -151,9 +158,36 @@ const describe = (r) => {
   return [status && `status=${status}`, desc, tag(r.body, 'custref') && `custref=${tag(r.body, 'custref')}`, tag(r.body, 'amount') && `amount=${tag(r.body, 'amount')}`]
     .filter(Boolean).join('; ') || compact(r.body);
 };
-const step = (n, text, r) => log(`| ${n} | ${now()} | ${text} | ${describe(r).replace(/\|/g, '\\|')} |`);
+// Full request/response log of every scenario step (written to requery-log-<time>.json).
+const stepLogs = [];
+const logFile = reportFile.replace('requery-report-', 'requery-log-').replace(/\.md$/, '.json');
+let currentScenario = '';
+const saveLogs = () => fs.writeFileSync(logFile, JSON.stringify(stepLogs, null, 2));
+const step = (n, text, r) => {
+  log(`| ${n} | ${now()} | ${text} | ${describe(r).replace(/\|/g, '\\|')} |`);
+  const entry = {
+    scenario: currentScenario,
+    step: String(n),
+    action: text,
+    sentAt: r.sentAt || now(),
+    requestBody: r.requestXml || null,
+    httpStatus: r.timedOut || r.error ? null : r.code,
+    responseBody: r.timedOut ? null : r.body || null,
+    location: r.location || null,
+    note: r.timedOut ? 'No response within partner timeout (200 ms)' : r.error ? `Network error: ${r.error}` : null,
+  };
+  stepLogs.push(entry);
+  if (r.late) {
+    r.late.then((late) => {
+      entry.lateResponse = { httpStatus: late.code ?? null, responseBody: late.body ?? null, location: late.location || null, error: late.error || null };
+      saveLogs();
+    });
+  }
+  saveLogs();
+};
 const enquire = async (n, t) => step(n, `Status enquiry (txnId ${t.txnId}, flag 0)`, await post(searchXml(t.txnId)));
 const header = (id, title, t) => {
+  currentScenario = id;
   log(`\n## ${id} — ${title}\n`);
   if (t) log(`txnId \`${t.txnId}\` · refId \`${t.refId}\` · amount ${t.amount} · payee ${t.payee}\n`);
   log('| Step | Time | Action | Result |\n|---|---|---|---|');

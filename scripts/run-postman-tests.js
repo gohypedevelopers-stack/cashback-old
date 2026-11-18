@@ -77,5 +77,18 @@ newman.run(
     fs.mkdirSync(reportDir, { recursive: true });
     fs.writeFileSync(reportFile, lines.join('\n') + '\n');
     console.log(`\nReport written to ${reportFile}`);
+
+    // Full request/response log for every request (as actually sent, variables resolved).
+    const logs = executions.map((ex) => ({
+      folder: ex.item.parent() && ex.item.parent().name,
+      name: ex.item.name,
+      requestBody: ex.request && ex.request.body ? String(ex.request.body.raw || '') : '',
+      httpStatus: ex.response ? ex.response.code : null,
+      responseBody: ex.response ? ex.response.text() : null,
+      error: ex.requestError ? ex.requestError.message : null,
+    }));
+    const logFile = reportFile.replace(/\.md$/, '.json');
+    fs.writeFileSync(logFile, JSON.stringify(logs, null, 2));
+    console.log(`Request/response log written to ${logFile}`);
   }
 );
